@@ -51,6 +51,7 @@ function generateTable(poolNodes) {
           <th style="padding: 12px;">Consensus Client</th>
           <th style="padding: 12px;">System Usage</th>
           <th style="padding: 12px;">Block Info</th>
+          <th style="padding: 12px;">Receipt Floor</th>
           <th style="padding: 12px;">Peers</th>
           <th style="padding: 12px;">Git Info</th>
           <th style="padding: 12px;">Peer Details</th>
@@ -86,6 +87,9 @@ function generateTable(poolNodes) {
         <td style="padding: 8px;">
           Number: ${data.block_number || 'N/A'}<br>
           Hash: <span style="font-family: monospace; font-size: 0.9em; word-break: break-all;">${data.block_hash || 'N/A'}</span>
+        </td>
+        <td style="padding: 8px;">
+          ${Number.isFinite(data.receipt_floor) ? data.receipt_floor.toLocaleString('en-US') : 'N/A'}
         </td>
         <td style="padding: 8px;">
           Execution: ${data.execution_peers || 'N/A'}<br>
