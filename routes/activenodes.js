@@ -39,6 +39,20 @@ function fetchPoolNodes() {
 }
 
 // Function to generate HTML table from pool nodes data
+// History a reth node reports at check-in (getLogs plan 2b/2c); other clients report none.
+// Floors are the oldest block the node holds; 0 is a valid floor, so no `||`
+function formatFloor(floor) {
+  return Number.isFinite(floor) ? `from ${floor.toLocaleString('en-US')}` : 'N/A';
+}
+
+function formatStateHistory(history) {
+  if (!history || typeof history !== 'object') return 'N/A';
+  if (history.mode === 'full') return 'all (archive)';
+  if (history.mode === 'distance' && Number.isFinite(history.blocks)) return `last ${history.blocks.toLocaleString('en-US')} blocks`;
+  if (history.mode === 'before' && Number.isFinite(history.block)) return `from ${history.block.toLocaleString('en-US')}`;
+  return 'N/A';
+}
+
 function generateTable(poolNodes) {
   let tableHtml = `
     <table border="1" style="border-collapse: collapse; width: 100%; margin: 20px 0px;">
@@ -51,7 +65,7 @@ function generateTable(poolNodes) {
           <th style="padding: 12px;">Consensus Client</th>
           <th style="padding: 12px;">System Usage</th>
           <th style="padding: 12px;">Block Info</th>
-          <th style="padding: 12px;">Receipt Floor</th>
+          <th style="padding: 12px;">History</th>
           <th style="padding: 12px;">Peers</th>
           <th style="padding: 12px;">Git Info</th>
           <th style="padding: 12px;">Peer Details</th>
@@ -88,8 +102,10 @@ function generateTable(poolNodes) {
           Number: ${data.block_number || 'N/A'}<br>
           Hash: <span style="font-family: monospace; font-size: 0.9em; word-break: break-all;">${data.block_hash || 'N/A'}</span>
         </td>
-        <td style="padding: 8px;">
-          ${Number.isFinite(data.receipt_floor) ? data.receipt_floor.toLocaleString('en-US') : 'N/A'}
+        <td style="padding: 8px; white-space: nowrap;">
+          Receipts: ${formatFloor(data.receipt_floor)}<br>
+          Bodies: ${formatFloor(data.body_floor)}<br>
+          State: ${formatStateHistory(data.state_history)}
         </td>
         <td style="padding: 8px;">
           Execution: ${data.execution_peers || 'N/A'}<br>
