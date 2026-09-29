@@ -268,6 +268,7 @@ router.get("/ratelimitstatus", async (req, res) => {
         </head>
         <body>
           <h1>🚦 Rate Limit Status</h1>
+          <div class="units-note" style="font-size: 0.9em; color: #666; margin: 4px 0 12px;">Counts are <strong>request units</strong> from the edge proxy&#39;s rate limiter, not raw requests: most calls count 1, eth_getLogs 2&ndash;11 by block range, full blocks and block receipts 2, eth_feeHistory and eth_getProof more by size (before 2026-09-28 each eth_getLogs counted 100). The rate limits are in the same units. Not counted: buidlguidl-client traffic, requests the edge rejects, and requests served by the fallback.</div>
           <button class="refresh-btn" onclick="location.reload()">↻ Refresh</button>
           <span class="timestamp">Last updated: ${data.timestamp ? new Date(data.timestamp).toLocaleString() : 'N/A'}</span>
           
@@ -330,19 +331,19 @@ router.get("/ratelimitstatus", async (req, res) => {
             <div class="config-grid">
               <div class="config-item">
                 <span class="config-label">Origin Hourly Limit:</span>
-                <span class="config-value">${data.config?.originRateLimitPerHour?.toLocaleString() || 'N/A'}</span>
+                <span class="config-value">${data.config?.originRateLimitPerHour?.toLocaleString() || 'N/A'} request units</span>
               </div>
               <div class="config-item">
                 <span class="config-label">Origin Daily Limit:</span>
-                <span class="config-value">${data.config?.originRateLimitPerDay?.toLocaleString() || 'N/A'}</span>
+                <span class="config-value">${data.config?.originRateLimitPerDay?.toLocaleString() || 'N/A'} request units</span>
               </div>
               <div class="config-item">
                 <span class="config-label">IP Hourly Limit:</span>
-                <span class="config-value">${data.config?.ipRateLimitPerHour?.toLocaleString() || 'N/A'}</span>
+                <span class="config-value">${data.config?.ipRateLimitPerHour?.toLocaleString() || 'N/A'} request units</span>
               </div>
               <div class="config-item">
                 <span class="config-label">IP Daily Limit:</span>
-                <span class="config-value">${data.config?.ipRateLimitPerDay?.toLocaleString() || 'N/A'}</span>
+                <span class="config-value">${data.config?.ipRateLimitPerDay?.toLocaleString() || 'N/A'} request units</span>
               </div>
               <div class="config-item">
                 <span class="config-label">Poll Interval:</span>
@@ -357,11 +358,11 @@ router.get("/ratelimitstatus", async (req, res) => {
                 <thead>
                   <tr>
                     <th>Origin</th>
-                    <th>Current Hour</th>
-                    <th>Previous Hour</th>
-                    <th>Effective Hourly</th>
+                    <th>Current Hour (request units)</th>
+                    <th>Previous Hour (request units)</th>
+                    <th>Effective Hourly (request units)</th>
                     <th>Hourly Blocked</th>
-                    <th>Daily</th>
+                    <th>Daily (request units)</th>
                     <th>Daily Blocked</th>
                   </tr>
                 </thead>
@@ -378,11 +379,11 @@ router.get("/ratelimitstatus", async (req, res) => {
                 <thead>
                   <tr>
                     <th>IP Address</th>
-                    <th>Current Hour</th>
-                    <th>Previous Hour</th>
-                    <th>Effective Hourly</th>
+                    <th>Current Hour (request units)</th>
+                    <th>Previous Hour (request units)</th>
+                    <th>Effective Hourly (request units)</th>
                     <th>Hourly Blocked</th>
-                    <th>Daily</th>
+                    <th>Daily (request units)</th>
                     <th>Daily Blocked</th>
                   </tr>
                 </thead>

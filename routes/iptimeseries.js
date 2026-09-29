@@ -127,7 +127,8 @@ router.get("/iptimeseries", async (req, res) => {
             </style>
           </head>
           <body>
-            <h1>IP Request Timeseries - Top 30 IPs</h1>
+            <h1>IP Request Units Timeseries - Top 30 IPs</h1>
+            <div class="units-note" style="font-size: 0.9em; color: #666; margin: 4px 0 12px;">Counts are <strong>request units</strong> from the edge proxy&#39;s rate limiter, not raw requests: most calls count 1, eth_getLogs 2&ndash;11 by block range, full blocks and block receipts 2, eth_feeHistory and eth_getProof more by size (before 2026-09-28 each eth_getLogs counted 100). The rate limits are in the same units. Not counted: buidlguidl-client traffic, requests the edge rejects, and requests served by the fallback.</div>
             <p class="message">No data found in the database for the selected time range.</p>
           </body>
         </html>
@@ -341,7 +342,8 @@ router.get("/iptimeseries", async (req, res) => {
         </head>
         <body>
           <div class="header-container">
-            <h1>IP Request Timeseries - Top 30 IPs</h1>
+            <h1>IP Request Units Timeseries - Top 30 IPs</h1>
+            <div class="units-note" style="font-size: 0.9em; color: #666; margin: 4px 0 12px;">Counts are <strong>request units</strong> from the edge proxy&#39;s rate limiter, not raw requests: most calls count 1, eth_getLogs 2&ndash;11 by block range, full blocks and block receipts 2, eth_feeHistory and eth_getProof more by size (before 2026-09-28 each eth_getLogs counted 100). The rate limits are in the same units. Not counted: buidlguidl-client traffic, requests the edge rejects, and requests served by the fallback.</div>
             <div class="controls">
               <div class="filter-group">
                 <span class="filter-label">Origin:</span>
@@ -418,7 +420,7 @@ router.get("/iptimeseries", async (req, res) => {
                   size: markerSizes,
                   symbol: markerSymbol
                 },
-                hovertemplate: '<b>' + ip + '</b><br>Requests: %{y}<extra></extra>',
+                hovertemplate: '<b>' + ip + '</b><br>Request units: %{y}<extra></extra>',
                 // Store all count arrays for filtering
                 countsTotal: data.countsTotal,
                 countsWithOrigin: data.countsWithOrigin,
@@ -458,7 +460,7 @@ router.get("/iptimeseries", async (req, res) => {
                 range: [minTime, maxTime]  // Set exact range to eliminate blank spaces
               },
               yaxis: {
-                title: 'Request Count',
+                title: 'Request Units',
                 showgrid: true,
                 range: [0, maxY]  // Start at 0 and extend to max with padding
               },

@@ -170,9 +170,9 @@ router.get("/iptable", async (req, res) => {
     const headerCells = `
       <th data-sort="string">IP</th>
       <th data-sort="string">Origins</th>
-      <th data-sort="number">Requests Last Hour</th>
-      <th data-sort="number">Requests This Month</th>
-      <th data-sort="number">Requests Total</th>
+      <th data-sort="number">Request Units Last Hour</th>
+      <th data-sort="number">Request Units This Month</th>
+      <th data-sort="number">Request Units Total</th>
       <th data-sort="string">Last Hourly Reset</th>
       <th data-sort="string">Updated At</th>
     `;
@@ -316,7 +316,8 @@ router.get("/iptable", async (req, res) => {
         </head>
         <body>
           <h1>IP Table</h1>
-          <div class="stats">Total entries: ${data.length} | Total requests last hour: ${totalRequestsLastHour}</div>
+          <div class="stats">Total entries: ${data.length} | Total request units last hour: ${totalRequestsLastHour}</div>
+          <div class="units-note" style="font-size: 0.9em; color: #666; margin: 4px 0 12px;">Counts are <strong>request units</strong> from the edge proxy&#39;s rate limiter, not raw requests: most calls count 1, eth_getLogs 2&ndash;11 by block range, full blocks and block receipts 2, eth_feeHistory and eth_getProof more by size (before 2026-09-28 each eth_getLogs counted 100). The rate limits are in the same units. Not counted: buidlguidl-client traffic, requests the edge rejects, and requests served by the fallback.</div>
           
           <!-- IP Info Modal -->
           <div id="ipModal" class="modal">

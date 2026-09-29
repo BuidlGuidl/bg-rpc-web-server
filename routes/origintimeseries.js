@@ -130,7 +130,8 @@ router.get("/origintimeseries", async (req, res) => {
             </style>
           </head>
           <body>
-            <h1>Origin Request Timeseries - Top 30 Origins</h1>
+            <h1>Origin Request Units Timeseries - Top 30 Origins</h1>
+            <div class="units-note" style="font-size: 0.9em; color: #666; margin: 4px 0 12px;">Counts are <strong>request units</strong> from the edge proxy&#39;s rate limiter, not raw requests: most calls count 1, eth_getLogs 2&ndash;11 by block range, full blocks and block receipts 2, eth_feeHistory and eth_getProof more by size (before 2026-09-28 each eth_getLogs counted 100). The rate limits are in the same units. Not counted: buidlguidl-client traffic, requests the edge rejects, and requests served by the fallback.</div>
             <p class="message">No data found in the database for the selected time range.</p>
           </body>
         </html>
@@ -302,7 +303,8 @@ router.get("/origintimeseries", async (req, res) => {
         </head>
         <body>
           <div class="header-container">
-            <h1>Origin Request Timeseries - Top 30 Origins</h1>
+            <h1>Origin Request Units Timeseries - Top 30 Origins</h1>
+            <div class="units-note" style="font-size: 0.9em; color: #666; margin: 4px 0 12px;">Counts are <strong>request units</strong> from the edge proxy&#39;s rate limiter, not raw requests: most calls count 1, eth_getLogs 2&ndash;11 by block range, full blocks and block receipts 2, eth_feeHistory and eth_getProof more by size (before 2026-09-28 each eth_getLogs counted 100). The rate limits are in the same units. Not counted: buidlguidl-client traffic, requests the edge rejects, and requests served by the fallback.</div>
             <div class="controls">
               <button class="time-filter-btn active" data-days="1">1 Day</button>
               <button class="time-filter-btn" data-days="3">3 Days</button>
@@ -369,7 +371,7 @@ router.get("/origintimeseries", async (req, res) => {
                   size: markerSizes,
                   symbol: markerSymbol
                 },
-                hovertemplate: '<b>' + origin + '</b><br>Requests: %{y}<extra></extra>'
+                hovertemplate: '<b>' + origin + '</b><br>Request units: %{y}<extra></extra>'
               };
             });
 
@@ -402,7 +404,7 @@ router.get("/origintimeseries", async (req, res) => {
                 range: [minTime, maxTime]  // Set exact range to eliminate blank spaces
               },
               yaxis: {
-                title: 'Request Count',
+                title: 'Request Units',
                 showgrid: true,
                 range: [0, maxY]  // Start at 0 and extend to max with padding
               },
@@ -443,9 +445,9 @@ router.get("/origintimeseries", async (req, res) => {
               
               let html = '<table class="origin-info-table">';
               html += \`<tr><td>Origin</td><td>\${origin}</td></tr>\`;
-              html += \`<tr><td>Total Requests</td><td>\${totalRequests.toLocaleString()}</td></tr>\`;
-              html += \`<tr><td>Average Requests/Hour</td><td>\${avgRequests}</td></tr>\`;
-              html += \`<tr><td>Peak Requests/Hour</td><td>\${maxRequests.toLocaleString()}</td></tr>\`;
+              html += \`<tr><td>Total Request Units</td><td>\${totalRequests.toLocaleString()}</td></tr>\`;
+              html += \`<tr><td>Average Request Units/Hour</td><td>\${avgRequests}</td></tr>\`;
+              html += \`<tr><td>Peak Request Units/Hour</td><td>\${maxRequests.toLocaleString()}</td></tr>\`;
               html += \`<tr><td>Active Hours</td><td>\${activeHours} / \${data.counts.length}</td></tr>\`;
               html += '</table>';
               modalBody.innerHTML = html;
