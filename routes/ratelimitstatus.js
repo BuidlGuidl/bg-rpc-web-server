@@ -1,4 +1,9 @@
 const express = require('express');
+// Counts on this page are request units from the edge proxy's rate limiter (the shared cost
+// table, getLogs plan D17), not raw requests like the dashboard: most calls 1, eth_getLogs
+// 2-11 by block range, blocks and block receipts 2, eth_feeHistory / eth_getProof by size
+// (eth_getLogs was 100 before 2026-09-28). The edge doesn't count buidlguidl-client traffic,
+// requests it rejects, or requests served by the fallback.
 const router = express.Router();
 const axios = require('axios');
 
@@ -268,7 +273,6 @@ router.get("/ratelimitstatus", async (req, res) => {
         </head>
         <body>
           <h1>🚦 Rate Limit Status</h1>
-          <div class="units-note" style="font-size: 0.9em; color: #666; margin: 4px 0 12px;">Counts are <strong>request units</strong> from the edge proxy&#39;s rate limiter, not raw requests: most calls count 1, eth_getLogs 2&ndash;11 by block range, full blocks and block receipts 2, eth_feeHistory and eth_getProof more by size (before 2026-09-28 each eth_getLogs counted 100). The rate limits are in the same units. Not counted: buidlguidl-client traffic, requests the edge rejects, and requests served by the fallback.</div>
           <button class="refresh-btn" onclick="location.reload()">↻ Refresh</button>
           <span class="timestamp">Last updated: ${data.timestamp ? new Date(data.timestamp).toLocaleString() : 'N/A'}</span>
           
