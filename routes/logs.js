@@ -7,7 +7,7 @@ const fs = require('fs');
 require('dotenv').config();
 
 const { logsPort, logItemsPerPage } = require('../config');
-const { ignoredErrorCodes } = require('../../shared/ignoredErrorCodes');
+const { classifyStatus } = require('../utils/errorClass');
 
 // Create an HTTPS agent that uses proper SSL validation
 const httpsAgent = new https.Agent({
@@ -101,47 +101,11 @@ function renderPagination(currentPage, totalPages, baseUrl, tableId) {
 }
 
 function getRowClass(log) {
-  if (typeof log.status === 'string' && log.status.toLowerCase() === 'success') {
-    return '';
-  }
-
-  // Handle timeout errors specifically
-  if (typeof log.status === 'string' && log.status.toLowerCase().includes('timeout')) {
-    return ' class="warning"';
-  }
-  
-  try {
-    // Only attempt to parse if it looks like JSON
-    if (typeof log.status === 'string' && (log.status.startsWith('{') || log.status.startsWith('['))) {
-      const statusObj = JSON.parse(log.status);
-      // If error code is in ignored list at root or in .error.code, do not treat as error or warning
-      if (
-        (statusObj?.error?.code !== undefined && ignoredErrorCodes.includes(Number(statusObj.error.code))) ||
-        (statusObj?.code !== undefined && ignoredErrorCodes.includes(Number(statusObj.code)))
-      ) {
-        return '';
-      }
-      // Check if it contains an error code starting with -69
-      if (
-        (statusObj?.error?.code && statusObj.error.code.toString().startsWith('-69')) ||
-        (statusObj?.code && statusObj.code.toString().startsWith('-69'))
-      ) {
-        return ' class="warning"';
-      }
-    }
-    // If status is just a number or string error code
-    if (
-      (typeof log.status === 'number' && ignoredErrorCodes.includes(log.status)) ||
-      (typeof log.status === 'string' && !isNaN(log.status) && ignoredErrorCodes.includes(Number(log.status)))
-    ) {
-      return '';
-    }
-  } catch (e) {
-    // If parsing fails, just continue to return error class
-    console.debug('Non-JSON status value:', log.status);
-  }
-  
-  return ' class="error"';
+  // Only our failures are red; a caller's mistake answered by a node is shown plain (utils/errorClass.js)
+  const errorClass = classifyStatus(log.status);
+  if (errorClass === 'warning') return ' class="warning"';
+  if (errorClass === 'error') return ' class="error"';
+  return '';
 }
 
 function getCompareRowClass(log) {
@@ -378,33 +342,12 @@ router.get("/logs", async (req, res) => {
       const filterFn = log => {
         if (isNoClient) return log.origin !== 'buidlguidl-client';
         
-        const status = log.status?.toLowerCase?.() || '';
-        if (isSuccess) return status === 'success';
-        if (isWarning) {
-          // Check for timeout or -69 error code
-          if (status.includes('timeout')) return true;
-          try {
-            if (typeof status === 'string') {
-              const statusObj = JSON.parse(status);
-              if (statusObj?.error?.code && statusObj.error.code.toString().startsWith('-69')) {
-                return true;
-              }
-            }
-          } catch (e) {}
-          return false;
-        }
-        // Error case - not success and not warning
-        if (status === 'success') return false;
-        if (status.includes('timeout')) return false;
-        try {
-          if (typeof status === 'string') {
-            const statusObj = JSON.parse(status);
-            if (statusObj?.error?.code && statusObj.error.code.toString().startsWith('-69')) {
-              return false;
-            }
-          }
-        } catch (e) {}
-        return true;
+        // Same classes as the row colours: Warning = our nodes lacked data or timed out,
+        // Error = our failures only; a caller's mistake is neither (utils/errorClass.js)
+        const errorClass = classifyStatus(log.status);
+        if (isSuccess) return errorClass === 'ok';
+        if (isWarning) return errorClass === 'warning';
+        return errorClass === 'error';
       };
       
       poolLogs = poolLogs.filter(filterFn);
