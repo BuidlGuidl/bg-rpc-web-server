@@ -164,7 +164,6 @@ app.use((req, res, next) => {
             <a href="/logs" style="margin-right: 15px; color: #333; text-decoration: none;">Logs</a>
             <a href="/activenodes" style="margin-right: 15px; color: #333; text-decoration: none;">Active Nodes</a>
             <a href="/requestortable" style="margin-right: 15px; color: #333; text-decoration: none;">Requestor Table</a>
-            <a href="/iptable" style="margin-right: 15px; color: #333; text-decoration: none;">IP Table</a>
             <a href="/iptimeseries" style="margin-right: 15px; color: #333; text-decoration: none;">IP Timeseries</a>
             <a href="/origintimeseries" style="margin-right: 15px; color: #333; text-decoration: none;">Origin Timeseries</a>
             <a href="/cacheddata" style="margin-right: 15px; color: #333; text-decoration: none;">Cached Data</a>
