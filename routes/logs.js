@@ -30,6 +30,7 @@ async function fetchLogs(url) {
       .map(log => ({
         timestamp: log.timestamp,
         origin: log.requester || '',
+        ip: log.ip || '',
         method: log.method,
         params: log.params,
         duration: log.elapsed,
@@ -177,6 +178,7 @@ function renderTable(logs, title, currentPage, tableId, isAjax = false) {
           <td>${log.duration}</td>
           <td>${log.status}</td>
           <td>${log.origin}</td>
+          <td>${log.ip}</td>
           <td>${log.method}</td>
           <td>${log.params}</td>
         </tr>
@@ -212,6 +214,7 @@ function renderTable(logs, title, currentPage, tableId, isAjax = false) {
             <th>Duration (ms)</th>
             <th>Status</th>
             <th>Origin</th>
+            <th>IP</th>
             <th>Method</th>
             <th>Params</th>
             `}
@@ -234,6 +237,7 @@ function renderTable(logs, title, currentPage, tableId, isAjax = false) {
               <td>${log.duration}</td>
               <td>${log.status}</td>
               <td>${log.origin}</td>
+              <td>${log.ip}</td>
               <td>${log.method}</td>
               <td>${log.params}</td>
             </tr>
