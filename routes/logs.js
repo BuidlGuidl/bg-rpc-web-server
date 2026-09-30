@@ -19,32 +19,45 @@ const httpsAgent = new https.Agent({
 // logService.js), and gives each request and node entry its error class (bg-rpc-logs
 // utils/errorClass.js, the one copy: bg-rpc-docs LOGS_SERVICE_OPTIMIZATION_PLAN.md, D1).
 const FILTERS = ['all', 'no-client', 'success', 'warning', 'error'];
+// Search limits, as the logs service enforces them
+const MAX_METHOD_CHARS = 100;
+const MAX_SEARCH_CHARS = 200;
 
-// One page of a table, newest first: { total, entries }. total counts the entries that pass the filter.
-async function fetchPage(url, page, filter) {
+// Everything in a log entry can come from outside: params, origin and status from callers,
+// node IDs, owners and results from volunteer nodes. Escape every value put into the page.
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+}
+
+// One page of a table, newest first: { total, methods, entries }. total counts the entries that
+// pass the filter and search; methods lists every method in the table (for the method dropdown).
+// search: { method, q }, both optional.
+async function fetchPage(url, page, filter, search = {}) {
   try {
     const response = await axios.get(`https://${process.env.HOST}:${logsPort}${url}`, {
       httpsAgent,
       headers: {
         'Accept': 'application/json'
       },
-      params: { page, limit: logItemsPerPage, filter }
+      params: { page, limit: logItemsPerPage, filter, method: search.method || undefined, q: search.q || undefined }
     });
-    const { total, entries } = response.data || {};
+    const { total, methods, entries } = response.data || {};
     return {
       total: Number.isInteger(total) ? total : 0,
+      methods: Array.isArray(methods) ? methods : [],
       entries: Array.isArray(entries) ? entries : []
     };
   } catch (error) {
     console.error(`Error fetching logs from ${url}:`, error);
-    return { total: 0, entries: [] };
+    return { total: 0, methods: [], entries: [] };
   }
 }
 
-async function fetchRequestLogs(url, page, filter) {
-  const { total, entries } = await fetchPage(url, page, filter);
+async function fetchRequestLogs(url, page, filter, search) {
+  const { total, methods, entries } = await fetchPage(url, page, filter, search);
   return {
     total,
+    methods,
     entries: entries.map(log => ({
       timestamp: log.timestamp,
       origin: log.requester || '',
@@ -60,11 +73,11 @@ async function fetchRequestLogs(url, page, filter) {
 
 // The page's tables: the logs service endpoint behind each, and how its rows are read
 const TABLES = {
-  poolLogs: { title: 'Pool Request Logs', fetch: (page, filter) => fetchRequestLogs('/poolRequests', page, filter) },
-  fallbackLogs: { title: 'Fallback Request Logs', fetch: (page, filter) => fetchRequestLogs('/fallbackRequests', page, filter) },
-  cacheLogs: { title: 'Cache Request Logs', fetch: (page, filter) => fetchRequestLogs('/cacheRequests', page, filter) },
-  poolNodeLogs: { title: 'Pool Node Logs', fetch: (page, filter) => fetchPage('/poolNodes', page, filter) },
-  poolCompareResults: { title: 'Pool Compare Results', fetch: (page, filter) => fetchPage('/poolCompareResults', page, filter), isCompare: true }
+  poolLogs: { title: 'Pool Request Logs', fetch: (page, filter, search) => fetchRequestLogs('/poolRequests', page, filter, search) },
+  fallbackLogs: { title: 'Fallback Request Logs', fetch: (page, filter, search) => fetchRequestLogs('/fallbackRequests', page, filter, search) },
+  cacheLogs: { title: 'Cache Request Logs', fetch: (page, filter, search) => fetchRequestLogs('/cacheRequests', page, filter, search) },
+  poolNodeLogs: { title: 'Pool Node Logs', fetch: (page, filter, search) => fetchPage('/poolNodes', page, filter, search) },
+  poolCompareResults: { title: 'Pool Compare Results', fetch: (page, filter, search) => fetchPage('/poolCompareResults', page, filter, search), isCompare: true }
 };
 
 function renderPagination(currentPage, totalPages, baseUrl, tableId) {
@@ -107,54 +120,126 @@ function getCompareRowClass(log) {
   return ' class="error"';
 }
 
-function renderTable({ total, entries: pageData }, title, currentPage, tableId, isAjax = false) {
-  const totalPages = Math.ceil(total / logItemsPerPage);
+function renderRequestRow(log) {
+  return `
+            <tr${getRowClass(log)}>
+              <td>${escapeHtml(log.timestamp)}</td>
+              <td>${escapeHtml(log.duration)}</td>
+              <td>${escapeHtml(log.status)}</td>
+              <td>${escapeHtml(log.origin)}</td>
+              <td>${escapeHtml(log.ip)}</td>
+              <td>${escapeHtml(log.method)}</td>
+              <td>${escapeHtml(log.params)}</td>
+            </tr>
+          `;
+}
 
-  const isPoolNodeLogs = tableId === 'poolNodeLogs';
-  
+function renderNodeRow(log) {
+  return `
+            <tr${getRowClass(log)}>
+              <td>${escapeHtml(log.timestamp)}</td>
+              <td>${escapeHtml(log.nodeId)}</td>
+              <td>${escapeHtml(log.owner)}</td>
+              <td>${escapeHtml(log.duration)}</td>
+              <td>${escapeHtml(log.status)}</td>
+              <td>${escapeHtml(log.method)}</td>
+              <td>${escapeHtml(log.params)}</td>
+            </tr>
+          `;
+}
+
+// A link that opens the value in the modal. The value goes into onclick as a JSON literal,
+// HTML-escaped (the browser unescapes the attribute before running it).
+function modalLink(value, label) {
+  return `<a class="view-object-link" onclick="showModal(${escapeHtml(JSON.stringify(value))})">${label}</a>`;
+}
+
+// A node's result in the compare table: short values inline, objects and long values behind a link
+function formatResult(result) {
+  // Handle string that might contain JSON
+  if (typeof result === 'string' && result.startsWith('result:')) {
+    const jsonStr = result.replace('result:', '').trim();
+    try {
+      const parsed = JSON.parse(jsonStr);
+      if (typeof parsed === 'object' && parsed !== null && Object.keys(parsed).length > 0) {
+        return modalLink(parsed, 'View Object');
+      }
+      return jsonStr.length > 48 ? modalLink(jsonStr, 'View Value') : escapeHtml(jsonStr);
+    } catch (e) {
+      return result.length > 48 ? modalLink(result, 'View Value') : escapeHtml(result);
+    }
+  }
+
+  // Handle direct objects
+  if (typeof result === 'object' && result !== null && Object.keys(result).length > 0) {
+    return modalLink(result, 'View Object');
+  }
+
+  // Handle long string values
+  if (typeof result === 'string' && result.length > 48) {
+    return modalLink(result, 'View Value');
+  }
+  return escapeHtml(result);
+}
+
+function renderCompareRow(log) {
+  return `
+            <tr${getCompareRowClass(log)}>
+              <td>${escapeHtml(log.timestamp)}</td>
+              <td>${log.resultsMatch ? 'Yes' : 'No'}</td>
+              <td>${escapeHtml(log.mismatchedNode || '-')}</td>
+              <td>${escapeHtml(log.mismatchedOwner || '-')}</td>
+              <td><span class="node-id">${escapeHtml(log.nodeId1)}</span><br>${formatResult(log.nodeResult1)}</td>
+              <td><span class="node-id">${escapeHtml(log.nodeId2)}</span><br>${formatResult(log.nodeResult2)}</td>
+              <td><span class="node-id">${escapeHtml(log.nodeId3)}</span><br>${formatResult(log.nodeResult3)}</td>
+              <td>${log.mismatchedResults.length ? log.mismatchedResults.map(r => formatResult(r)).join('<br>') : '-'}</td>
+              <td>${escapeHtml(log.method || '-')}</td>
+              <td>${escapeHtml(log.params || '-')}</td>
+            </tr>
+          `;
+}
+
+// The method dropdown and search box above a request or node table
+function renderSearchBar(tableId, methods) {
+  const placeholder = tableId === 'poolNodeLogs'
+    ? 'Search node, owner, params, status'
+    : 'Search origin, IP, params, status';
+  return `
+      <div class="search-bar">
+        <select id="${tableId}-method" onchange="searchLogs('${tableId}')">
+          <option value="">All methods</option>
+          ${methods.map(m => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join('')}
+        </select>
+        <input id="${tableId}-q" type="search" maxlength="${MAX_SEARCH_CHARS}" placeholder="${placeholder}" oninput="searchLogsSoon('${tableId}')">
+      </div>`;
+}
+
+function renderTable({ total, methods, entries: pageData }, title, currentPage, tableId, isAjax = false) {
+  const totalPages = Math.ceil(total / logItemsPerPage);
+  const renderRow = tableId === 'poolNodeLogs' ? renderNodeRow : renderRequestRow;
+  const pagination = total > logItemsPerPage ? renderPagination(currentPage, totalPages, '', tableId) : '';
+
   if (isAjax) {
-    // For AJAX requests, only return the table body and pagination
-    return {
-      tbody: pageData.map(log => isPoolNodeLogs ? `
-        <tr${getRowClass(log)}>
-          <td>${log.timestamp}</td>
-          <td>${log.nodeId}</td>
-          <td>${log.owner}</td>
-          <td>${log.duration}</td>
-          <td>${log.status}</td>
-          <td>${log.method}</td>
-          <td>${log.params}</td>
-        </tr>
-      ` : `
-        <tr${getRowClass(log)}>
-          <td>${log.timestamp}</td>
-          <td>${log.duration}</td>
-          <td>${log.status}</td>
-          <td>${log.origin}</td>
-          <td>${log.ip}</td>
-          <td>${log.method}</td>
-          <td>${log.params}</td>
-        </tr>
-      `).join(''),
-      pagination: total > logItemsPerPage ? renderPagination(currentPage, totalPages, '', tableId) : ''
-    };
+    // For AJAX requests, only return the table body, pagination and count
+    return { tbody: pageData.map(renderRow).join(''), pagination, total };
   }
 
   // For initial render, return the full table
   return `
     <div id="${tableId}" style="margin-bottom: 40px;">
-      <h2>${title} (${total} total entries)</h2>
+      <h2>${title} (<span id="${tableId}-total">${total}</span> total entries)</h2>
       <div class="filter-buttons" style="margin-bottom: 15px;">
         <button onclick="filterLogs('${tableId}', 'no-client')" class="filter-btn active">No Client</button>
         <button onclick="filterLogs('${tableId}', 'all')" class="filter-btn">All</button>
         <button onclick="filterLogs('${tableId}', 'success')" class="filter-btn">Success</button>
         <button onclick="filterLogs('${tableId}', 'warning')" class="filter-btn">Warning</button>
         <button onclick="filterLogs('${tableId}', 'error')" class="filter-btn">Error</button>
+        ${renderSearchBar(tableId, methods)}
       </div>
       <table border="1" style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
         <thead>
           <tr style="background-color: #f2f2f2;">
-            ${isPoolNodeLogs ? `
+            ${tableId === 'poolNodeLogs' ? `
             <th>Timestamp</th>
             <th>Node ID</th>
             <th>Owner</th>
@@ -174,31 +259,11 @@ function renderTable({ total, entries: pageData }, title, currentPage, tableId, 
           </tr>
         </thead>
         <tbody id="${tableId}-body">
-          ${pageData.map(log => isPoolNodeLogs ? `
-            <tr${getRowClass(log)}>
-              <td>${log.timestamp}</td>
-              <td>${log.nodeId}</td>
-              <td>${log.owner}</td>
-              <td>${log.duration}</td>
-              <td>${log.status}</td>
-              <td>${log.method}</td>
-              <td>${log.params}</td>
-            </tr>
-          ` : `
-            <tr${getRowClass(log)}>
-              <td>${log.timestamp}</td>
-              <td>${log.duration}</td>
-              <td>${log.status}</td>
-              <td>${log.origin}</td>
-              <td>${log.ip}</td>
-              <td>${log.method}</td>
-              <td>${log.params}</td>
-            </tr>
-          `).join('')}
+          ${pageData.map(renderRow).join('')}
         </tbody>
       </table>
       <div id="${tableId}-pagination">
-        ${total > logItemsPerPage ? renderPagination(currentPage, totalPages, '', tableId) : ''}
+        ${pagination}
       </div>
     </div>
   `;
@@ -206,63 +271,15 @@ function renderTable({ total, entries: pageData }, title, currentPage, tableId, 
 
 function renderCompareTable({ total, entries: pageData }, title, currentPage, tableId, isAjax = false) {
   const totalPages = Math.ceil(total / logItemsPerPage);
-
-  const formatResult = (result, index) => {
-    // Handle string that might contain JSON
-    if (typeof result === 'string' && result.startsWith('result:')) {
-      try {
-        const jsonStr = result.replace('result:', '').trim();
-        const parsed = JSON.parse(jsonStr);
-        if (typeof parsed === 'object' && parsed !== null && Object.keys(parsed).length > 0) {
-          const resultStr = JSON.stringify(parsed);
-          return `<a class="view-object-link" onclick='showModal(${resultStr.replace(/'/g, "\\'")})'>View Object</a>`;
-        }
-        return jsonStr.length > 48 ? 
-          `<a class="view-object-link" onclick='showModal("${jsonStr.replace(/"/g, '\\"')}")'>View Value</a>` : 
-          jsonStr;
-      } catch (e) {
-        return result.length > 48 ? 
-          `<a class="view-object-link" onclick='showModal("${result.replace(/"/g, '\\"')}")'>View Value</a>` : 
-          result;
-      }
-    }
-    
-    // Handle direct objects
-    if (typeof result === 'object' && result !== null && Object.keys(result).length > 0) {
-      const resultStr = JSON.stringify(result);
-      return `<a class="view-object-link" onclick='showModal(${resultStr.replace(/'/g, "\\'")})'>View Object</a>`;
-    }
-    
-    // Handle long string values
-    if (typeof result === 'string' && result.length > 48) {
-      return `<a class="view-object-link" onclick='showModal("${result.replace(/"/g, '\\"')}")'>View Value</a>`;
-    }
-    return result;
-  };
+  const pagination = total > logItemsPerPage ? renderPagination(currentPage, totalPages, '', tableId) : '';
 
   if (isAjax) {
-    return {
-      tbody: pageData.map((log, index) => `
-        <tr${getCompareRowClass(log)}>
-          <td>${log.timestamp}</td>
-          <td>${log.resultsMatch ? 'Yes' : 'No'}</td>
-          <td>${log.mismatchedNode || '-'}</td>
-          <td>${log.mismatchedOwner || '-'}</td>
-          <td><span class="node-id">${log.nodeId1}</span><br>${formatResult(log.nodeResult1, index)}</td>
-          <td><span class="node-id">${log.nodeId2}</span><br>${formatResult(log.nodeResult2, index)}</td>
-          <td><span class="node-id">${log.nodeId3}</span><br>${formatResult(log.nodeResult3, index)}</td>
-          <td>${log.mismatchedResults.length ? log.mismatchedResults.map(r => formatResult(r, index)).join('<br>') : '-'}</td>
-          <td>${log.method || '-'}</td>
-          <td>${log.params || '-'}</td>
-        </tr>
-      `).join(''),
-      pagination: total > logItemsPerPage ? renderPagination(currentPage, totalPages, '', tableId) : ''
-    };
+    return { tbody: pageData.map(renderCompareRow).join(''), pagination, total };
   }
 
   return `
     <div id="${tableId}" style="margin-bottom: 40px;">
-      <h2>${title} (${total} total entries)</h2>
+      <h2>${title} (<span id="${tableId}-total">${total}</span> total entries)</h2>
       <div class="filter-buttons hidden" style="margin-bottom: 15px;">
         <button onclick="filterLogs('${tableId}', 'no-client')" class="filter-btn active">No Client</button>
         <button onclick="filterLogs('${tableId}', 'all')" class="filter-btn">All</button>
@@ -285,24 +302,11 @@ function renderCompareTable({ total, entries: pageData }, title, currentPage, ta
           </tr>
         </thead>
         <tbody id="${tableId}-body">
-          ${pageData.map((log, index) => `
-            <tr${getCompareRowClass(log)}>
-              <td>${log.timestamp}</td>
-              <td>${log.resultsMatch ? 'Yes' : 'No'}</td>
-              <td>${log.mismatchedNode || '-'}</td>
-              <td>${log.mismatchedOwner || '-'}</td>
-              <td><span class="node-id">${log.nodeId1}</span><br>${formatResult(log.nodeResult1, index)}</td>
-              <td><span class="node-id">${log.nodeId2}</span><br>${formatResult(log.nodeResult2, index)}</td>
-              <td><span class="node-id">${log.nodeId3}</span><br>${formatResult(log.nodeResult3, index)}</td>
-              <td>${log.mismatchedResults.length ? log.mismatchedResults.map(r => formatResult(r, index)).join('<br>') : '-'}</td>
-              <td>${log.method || '-'}</td>
-              <td>${log.params || '-'}</td>
-            </tr>
-          `).join('')}
+          ${pageData.map(renderCompareRow).join('')}
         </tbody>
       </table>
       <div id="${tableId}-pagination">
-        ${total > logItemsPerPage ? renderPagination(currentPage, totalPages, '', tableId) : ''}
+        ${pagination}
       </div>
     </div>
   `;
@@ -312,6 +316,8 @@ router.get("/logs", async (req, res) => {
   try {
     const currentPage = Math.max(1, parseInt(req.query.page) || 1);
     const filter = FILTERS.includes(req.query.filter) ? req.query.filter : 'all';
+    const text = (value, max) => (typeof value === 'string' ? value.trim().slice(0, max) : '');
+    const search = { method: text(req.query.method, MAX_METHOD_CHARS), q: text(req.query.q, MAX_SEARCH_CHARS) };
 
     // If it's an AJAX request for a specific table, fetch and return only that table's page
     if (req.query.tableId) {
@@ -319,7 +325,7 @@ router.get("/logs", async (req, res) => {
       if (!table) {
         return res.status(400).json({ error: `unknown tableId ${req.query.tableId}` });
       }
-      const page = await table.fetch(currentPage, filter);
+      const page = await table.fetch(currentPage, filter, search);
       const rendered = table.isCompare
         ? renderCompareTable(page, table.title, currentPage, req.query.tableId, true)
         : renderTable(page, table.title, currentPage, req.query.tableId, true);
@@ -328,7 +334,7 @@ router.get("/logs", async (req, res) => {
     }
 
     const [poolLogs, fallbackLogs, cacheLogs, poolNodeLogs, poolCompareResults] = await Promise.all(
-      ['poolLogs', 'fallbackLogs', 'cacheLogs', 'poolNodeLogs', 'poolCompareResults'].map(id => TABLES[id].fetch(currentPage, filter))
+      ['poolLogs', 'fallbackLogs', 'cacheLogs', 'poolNodeLogs', 'poolCompareResults'].map(id => TABLES[id].fetch(currentPage, filter, search))
     );
 
     res.send(`
@@ -446,18 +452,33 @@ router.get("/logs", async (req, res) => {
             .hidden {
               display: none !important;
             }
+            .search-bar {
+              display: flex;
+              gap: 10px;
+              margin-left: 20px;
+            }
+            .search-bar select,
+            .search-bar input {
+              padding: 8px;
+              border: 1px solid #ddd;
+              border-radius: 4px;
+              font-size: 14px;
+            }
+            .search-bar input {
+              width: 320px;
+            }
           </style>
           <script>
-            let poolCurrentPage = 1;
-            let fallbackCurrentPage = 1;
-            let cacheCurrentPage = 1;
-            let poolNodeCurrentPage = 1;
-            let poolCompareCurrentPage = 1;
-            let poolCurrentFilter = 'no-client';
-            let fallbackCurrentFilter = 'no-client';
-            let cacheCurrentFilter = 'no-client';
-            let poolNodeCurrentFilter = 'all';
-            let poolCompareCurrentFilter = 'all';
+            // Per-table state: page, filter button, method dropdown, search text
+            const tableState = {
+              poolLogs: { page: 1, filter: 'no-client', method: '', q: '' },
+              fallbackLogs: { page: 1, filter: 'no-client', method: '', q: '' },
+              cacheLogs: { page: 1, filter: 'no-client', method: '', q: '' },
+              poolNodeLogs: { page: 1, filter: 'all', method: '', q: '' },
+              poolCompareResults: { page: 1, filter: 'all', method: '', q: '' }
+            };
+            const latestRequest = {};
+            const searchTimers = {};
 
             // Initialize filters on page load
             window.onload = function() {
@@ -468,8 +489,10 @@ router.get("/logs", async (req, res) => {
 
             function showModal(content) {
               const modal = document.getElementById('objectModal');
-              const modalContent = document.getElementById('modalContent');
-              modalContent.innerHTML = '<pre>' + JSON.stringify(content, null, 2) + '</pre>';
+              // As text: the content comes from nodes
+              const pre = document.createElement('pre');
+              pre.textContent = JSON.stringify(content, null, 2);
+              document.getElementById('modalContent').replaceChildren(pre);
               modal.style.display = 'block';
             }
 
@@ -486,35 +509,33 @@ router.get("/logs", async (req, res) => {
               }
             }
 
+            // Fetch the table's current page with its filter and search. A response that arrives
+            // after a newer request for the same table was sent is dropped.
+            async function loadTable(tableId) {
+              const state = tableState[tableId];
+              const request = (latestRequest[tableId] || 0) + 1;
+              latestRequest[tableId] = request;
+              const params = new URLSearchParams({ page: state.page, tableId: tableId, filter: state.filter });
+              if (state.method) params.set('method', state.method);
+              if (state.q) params.set('q', state.q);
+              const response = await fetch('/logs?' + params.toString(), {
+                headers: {
+                  'Accept': 'application/json'
+                }
+              });
+              const data = await response.json();
+              if (latestRequest[tableId] !== request) return;
+
+              // Update only the table body, pagination and count
+              document.getElementById(tableId + '-body').innerHTML = data.tbody;
+              document.getElementById(tableId + '-pagination').innerHTML = data.pagination;
+              document.getElementById(tableId + '-total').textContent = data.total;
+            }
+
             async function changePage(tableId, page) {
               try {
-                if (tableId === 'poolLogs') {
-                  poolCurrentPage = page;
-                } else if (tableId === 'fallbackLogs') {
-                  fallbackCurrentPage = page;
-                } else if (tableId === 'cacheLogs') {
-                  cacheCurrentPage = page;
-                } else if (tableId === 'poolNodeLogs') {
-                  poolNodeCurrentPage = page;
-                } else if (tableId === 'poolCompareResults') {
-                  poolCompareCurrentPage = page;
-                }
-
-                const filter = tableId === 'poolLogs' ? poolCurrentFilter : 
-                             tableId === 'fallbackLogs' ? fallbackCurrentFilter : 
-                             tableId === 'cacheLogs' ? cacheCurrentFilter :
-                             tableId === 'poolNodeLogs' ? poolNodeCurrentFilter :
-                             poolCompareCurrentFilter;
-                const response = await fetch(\`/logs?page=\${page}&tableId=\${tableId}&filter=\${filter}\`, {
-                  headers: {
-                    'Accept': 'application/json'
-                  }
-                });
-                const data = await response.json();
-                
-                // Update only the table body and pagination
-                document.getElementById(\`\${tableId}-body\`).innerHTML = data.tbody;
-                document.getElementById(\`\${tableId}-pagination\`).innerHTML = data.pagination;
+                tableState[tableId].page = page;
+                await loadTable(tableId);
               } catch (error) {
                 console.error('Error changing page:', error);
               }
@@ -523,25 +544,11 @@ router.get("/logs", async (req, res) => {
             async function filterLogs(tableId, filter) {
               try {
                 // Update filter state
-                if (tableId === 'poolLogs') {
-                  poolCurrentFilter = filter;
-                  poolCurrentPage = 1;
-                } else if (tableId === 'fallbackLogs') {
-                  fallbackCurrentFilter = filter;
-                  fallbackCurrentPage = 1;
-                } else if (tableId === 'cacheLogs') {
-                  cacheCurrentFilter = filter;
-                  cacheCurrentPage = 1;
-                } else if (tableId === 'poolNodeLogs') {
-                  poolNodeCurrentFilter = filter;
-                  poolNodeCurrentPage = 1;
-                } else if (tableId === 'poolCompareResults') {
-                  poolCompareCurrentFilter = filter;
-                  poolCompareCurrentPage = 1;
-                }
+                tableState[tableId].filter = filter;
+                tableState[tableId].page = 1;
 
                 // Update active button state
-                const buttons = document.querySelectorAll(\`#\${tableId} .filter-btn\`);
+                const buttons = document.querySelectorAll('#' + tableId + ' .filter-btn');
                 buttons.forEach(btn => {
                   btn.classList.remove('active');
                   const btnText = btn.textContent.toLowerCase();
@@ -557,20 +564,28 @@ router.get("/logs", async (req, res) => {
                   }
                 });
 
-                // Fetch filtered data
-                const response = await fetch(\`/logs?page=1&tableId=\${tableId}&filter=\${filter}\`, {
-                  headers: {
-                    'Accept': 'application/json'
-                  }
-                });
-                const data = await response.json();
-                
-                // Update the table
-                document.getElementById(\`\${tableId}-body\`).innerHTML = data.tbody;
-                document.getElementById(\`\${tableId}-pagination\`).innerHTML = data.pagination;
+                await loadTable(tableId);
               } catch (error) {
                 console.error('Error filtering logs:', error);
               }
+            }
+
+            async function searchLogs(tableId) {
+              try {
+                const state = tableState[tableId];
+                state.method = document.getElementById(tableId + '-method').value;
+                state.q = document.getElementById(tableId + '-q').value.trim();
+                state.page = 1;
+                await loadTable(tableId);
+              } catch (error) {
+                console.error('Error searching logs:', error);
+              }
+            }
+
+            // Search as you type, once typing pauses
+            function searchLogsSoon(tableId) {
+              clearTimeout(searchTimers[tableId]);
+              searchTimers[tableId] = setTimeout(function() { searchLogs(tableId); }, 300);
             }
           </script>
         </head>
@@ -608,7 +623,7 @@ router.get("/logs", async (req, res) => {
         </head>
         <body>
           <h1>Error Fetching Logs</h1>
-          <p class="error">${error.message}</p>
+          <p class="error">${escapeHtml(error.message)}</p>
           <p>Please try refreshing the page.</p>
         </body>
       </html>
