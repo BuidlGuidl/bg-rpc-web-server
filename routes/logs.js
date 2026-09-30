@@ -7,7 +7,6 @@ const fs = require('fs');
 require('dotenv').config();
 
 const { logsPort, logItemsPerPage } = require('../config');
-const { classifyStatus } = require('../utils/errorClass');
 
 // Create an HTTPS agent that uses proper SSL validation
 const httpsAgent = new https.Agent({
@@ -16,64 +15,57 @@ const httpsAgent = new https.Agent({
   key: fs.readFileSync('/home/ubuntu/shared/server.key')
 });
 
-async function fetchLogs(url) {
+// Filters the page offers. The logs service applies them and pages the tables (bg-rpc-logs
+// logService.js), and gives each request and node entry its error class (bg-rpc-logs
+// utils/errorClass.js, the one copy: bg-rpc-docs LOGS_SERVICE_OPTIMIZATION_PLAN.md, D1).
+const FILTERS = ['all', 'no-client', 'success', 'warning', 'error'];
+
+// One page of a table, newest first: { total, entries }. total counts the entries that pass the filter.
+async function fetchPage(url, page, filter) {
   try {
     const response = await axios.get(`https://${process.env.HOST}:${logsPort}${url}`, {
       httpsAgent,
       headers: {
         'Accept': 'application/json'
-      }
+      },
+      params: { page, limit: logItemsPerPage, filter }
     });
-    const logs = Array.isArray(response.data) ? response.data : [];
-    
-    return logs
-      .map(log => ({
-        timestamp: log.timestamp,
-        origin: log.requester || '',
-        ip: log.ip || '',
-        method: log.method,
-        params: log.params,
-        duration: log.elapsed,
-        status: log.status
-      }))
-      .reverse(); // Reverse the order so newest entries are first
+    const { total, entries } = response.data || {};
+    return {
+      total: Number.isInteger(total) ? total : 0,
+      entries: Array.isArray(entries) ? entries : []
+    };
   } catch (error) {
     console.error(`Error fetching logs from ${url}:`, error);
-    return [];
+    return { total: 0, entries: [] };
   }
 }
 
-async function fetchPoolNodeLogs() {
-  try {
-    const response = await axios.get(`https://${process.env.HOST}:${logsPort}/poolNodes`, {
-      httpsAgent,
-      headers: {
-        'Accept': 'application/json'
-      }
-    });
-    const logs = Array.isArray(response.data) ? response.data : [];
-    return logs.reverse(); // Reverse the order so newest entries are first
-  } catch (error) {
-    console.error('Error fetching pool node logs:', error);
-    return [];
-  }
+async function fetchRequestLogs(url, page, filter) {
+  const { total, entries } = await fetchPage(url, page, filter);
+  return {
+    total,
+    entries: entries.map(log => ({
+      timestamp: log.timestamp,
+      origin: log.requester || '',
+      ip: log.ip || '',
+      method: log.method,
+      params: log.params,
+      duration: log.elapsed,
+      status: log.status,
+      errorClass: log.errorClass
+    }))
+  };
 }
 
-async function fetchPoolCompareResults() {
-  try {
-    const response = await axios.get(`https://${process.env.HOST}:${logsPort}/poolCompareResults`, {
-      httpsAgent,
-      headers: {
-        'Accept': 'application/json'
-      }
-    });
-    const logs = Array.isArray(response.data) ? response.data : [];
-    return logs.reverse(); // Reverse the order so newest entries are first
-  } catch (error) {
-    console.error('Error fetching pool compare results:', error);
-    return [];
-  }
-}
+// The page's tables: the logs service endpoint behind each, and how its rows are read
+const TABLES = {
+  poolLogs: { title: 'Pool Request Logs', fetch: (page, filter) => fetchRequestLogs('/poolRequests', page, filter) },
+  fallbackLogs: { title: 'Fallback Request Logs', fetch: (page, filter) => fetchRequestLogs('/fallbackRequests', page, filter) },
+  cacheLogs: { title: 'Cache Request Logs', fetch: (page, filter) => fetchRequestLogs('/cacheRequests', page, filter) },
+  poolNodeLogs: { title: 'Pool Node Logs', fetch: (page, filter) => fetchPage('/poolNodes', page, filter) },
+  poolCompareResults: { title: 'Pool Compare Results', fetch: (page, filter) => fetchPage('/poolCompareResults', page, filter), isCompare: true }
+};
 
 function renderPagination(currentPage, totalPages, baseUrl, tableId) {
   const pages = [];
@@ -101,10 +93,10 @@ function renderPagination(currentPage, totalPages, baseUrl, tableId) {
 }
 
 function getRowClass(log) {
-  // Only our failures are red; a caller's mistake answered by a node is shown plain (utils/errorClass.js)
-  const errorClass = classifyStatus(log.status);
-  if (errorClass === 'warning') return ' class="warning"';
-  if (errorClass === 'error') return ' class="error"';
+  // Only our failures are red; a caller's mistake answered by a node is shown plain (errorClass
+  // comes from the logs service)
+  if (log.errorClass === 'warning') return ' class="warning"';
+  if (log.errorClass === 'error') return ' class="error"';
   return '';
 }
 
@@ -115,11 +107,8 @@ function getCompareRowClass(log) {
   return ' class="error"';
 }
 
-function renderTable(logs, title, currentPage, tableId, isAjax = false) {
-  const startIndex = (currentPage - 1) * logItemsPerPage;
-  const endIndex = startIndex + logItemsPerPage;
-  const totalPages = Math.ceil(logs.length / logItemsPerPage);
-  const pageData = logs.slice(startIndex, endIndex);
+function renderTable({ total, entries: pageData }, title, currentPage, tableId, isAjax = false) {
+  const totalPages = Math.ceil(total / logItemsPerPage);
 
   const isPoolNodeLogs = tableId === 'poolNodeLogs';
   
@@ -147,14 +136,14 @@ function renderTable(logs, title, currentPage, tableId, isAjax = false) {
           <td>${log.params}</td>
         </tr>
       `).join(''),
-      pagination: logs.length > logItemsPerPage ? renderPagination(currentPage, totalPages, '', tableId) : ''
+      pagination: total > logItemsPerPage ? renderPagination(currentPage, totalPages, '', tableId) : ''
     };
   }
 
   // For initial render, return the full table
   return `
     <div id="${tableId}" style="margin-bottom: 40px;">
-      <h2>${title} (${logs.length} total entries)</h2>
+      <h2>${title} (${total} total entries)</h2>
       <div class="filter-buttons" style="margin-bottom: 15px;">
         <button onclick="filterLogs('${tableId}', 'no-client')" class="filter-btn active">No Client</button>
         <button onclick="filterLogs('${tableId}', 'all')" class="filter-btn">All</button>
@@ -209,17 +198,14 @@ function renderTable(logs, title, currentPage, tableId, isAjax = false) {
         </tbody>
       </table>
       <div id="${tableId}-pagination">
-        ${logs.length > logItemsPerPage ? renderPagination(currentPage, totalPages, '', tableId) : ''}
+        ${total > logItemsPerPage ? renderPagination(currentPage, totalPages, '', tableId) : ''}
       </div>
     </div>
   `;
 }
 
-function renderCompareTable(logs, title, currentPage, tableId, isAjax = false) {
-  const startIndex = (currentPage - 1) * logItemsPerPage;
-  const endIndex = startIndex + logItemsPerPage;
-  const totalPages = Math.ceil(logs.length / logItemsPerPage);
-  const pageData = logs.slice(startIndex, endIndex);
+function renderCompareTable({ total, entries: pageData }, title, currentPage, tableId, isAjax = false) {
+  const totalPages = Math.ceil(total / logItemsPerPage);
 
   const formatResult = (result, index) => {
     // Handle string that might contain JSON
@@ -270,13 +256,13 @@ function renderCompareTable(logs, title, currentPage, tableId, isAjax = false) {
           <td>${log.params || '-'}</td>
         </tr>
       `).join(''),
-      pagination: logs.length > logItemsPerPage ? renderPagination(currentPage, totalPages, '', tableId) : ''
+      pagination: total > logItemsPerPage ? renderPagination(currentPage, totalPages, '', tableId) : ''
     };
   }
 
   return `
     <div id="${tableId}" style="margin-bottom: 40px;">
-      <h2>${title} (${logs.length} total entries)</h2>
+      <h2>${title} (${total} total entries)</h2>
       <div class="filter-buttons hidden" style="margin-bottom: 15px;">
         <button onclick="filterLogs('${tableId}', 'no-client')" class="filter-btn active">No Client</button>
         <button onclick="filterLogs('${tableId}', 'all')" class="filter-btn">All</button>
@@ -316,7 +302,7 @@ function renderCompareTable(logs, title, currentPage, tableId, isAjax = false) {
         </tbody>
       </table>
       <div id="${tableId}-pagination">
-        ${logs.length > logItemsPerPage ? renderPagination(currentPage, totalPages, '', tableId) : ''}
+        ${total > logItemsPerPage ? renderPagination(currentPage, totalPages, '', tableId) : ''}
       </div>
     </div>
   `;
@@ -324,77 +310,26 @@ function renderCompareTable(logs, title, currentPage, tableId, isAjax = false) {
 
 router.get("/logs", async (req, res) => {
   try {
-    const currentPage = parseInt(req.query.page) || 1;
-    const filter = req.query.filter || 'all';
-    let [poolLogs, fallbackLogs, cacheLogs, poolNodeLogs, poolCompareResults] = await Promise.all([
-      fetchLogs('/poolRequests'),
-      fetchLogs('/fallbackRequests'),
-      fetchLogs('/cacheRequests'),
-      fetchPoolNodeLogs(),
-      fetchPoolCompareResults()
-    ]);
+    const currentPage = Math.max(1, parseInt(req.query.page) || 1);
+    const filter = FILTERS.includes(req.query.filter) ? req.query.filter : 'all';
 
-    // Apply filters if needed
-    if (filter !== 'all') {
-      const isSuccess = filter === 'success';
-      const isWarning = filter === 'warning';
-      const isNoClient = filter === 'no-client';
-      const filterFn = log => {
-        if (isNoClient) return log.origin !== 'buidlguidl-client';
-        
-        // Same classes as the row colours: Warning = our nodes lacked data or timed out,
-        // Error = our failures only; a caller's mistake is neither (utils/errorClass.js)
-        const errorClass = classifyStatus(log.status);
-        if (isSuccess) return errorClass === 'ok';
-        if (isWarning) return errorClass === 'warning';
-        return errorClass === 'error';
-      };
-      
-      poolLogs = poolLogs.filter(filterFn);
-      fallbackLogs = fallbackLogs.filter(filterFn);
-      cacheLogs = cacheLogs.filter(filterFn);
-      poolNodeLogs = poolNodeLogs.filter(filterFn);
-      poolCompareResults = poolCompareResults.filter(log => 
-        isSuccess ? log.resultsMatch : !log.resultsMatch
-      );
-    }
-
-    // If it's an AJAX request for a specific table, return only the updated parts
+    // If it's an AJAX request for a specific table, fetch and return only that table's page
     if (req.query.tableId) {
-      let logs;
-      let title;
-      let isCompareTable = false;
-      
-      switch(req.query.tableId) {
-        case 'poolLogs':
-          logs = poolLogs;
-          title = 'Pool Request Logs';
-          break;
-        case 'fallbackLogs':
-          logs = fallbackLogs;
-          title = 'Fallback Request Logs';
-          break;
-        case 'cacheLogs':
-          logs = cacheLogs;
-          title = 'Cache Request Logs';
-          break;
-        case 'poolNodeLogs':
-          logs = poolNodeLogs;
-          title = 'Pool Node Logs';
-          break;
-        case 'poolCompareResults':
-          logs = poolCompareResults;
-          title = 'Pool Compare Results';
-          isCompareTable = true;
-          break;
+      const table = TABLES[req.query.tableId];
+      if (!table) {
+        return res.status(400).json({ error: `unknown tableId ${req.query.tableId}` });
       }
-      
-      const rendered = isCompareTable 
-        ? renderCompareTable(logs, title, currentPage, req.query.tableId, true)
-        : renderTable(logs, title, currentPage, req.query.tableId, true);
+      const page = await table.fetch(currentPage, filter);
+      const rendered = table.isCompare
+        ? renderCompareTable(page, table.title, currentPage, req.query.tableId, true)
+        : renderTable(page, table.title, currentPage, req.query.tableId, true);
       res.setHeader('Content-Type', 'application/json');
       return res.json(rendered);
     }
+
+    const [poolLogs, fallbackLogs, cacheLogs, poolNodeLogs, poolCompareResults] = await Promise.all(
+      ['poolLogs', 'fallbackLogs', 'cacheLogs', 'poolNodeLogs', 'poolCompareResults'].map(id => TABLES[id].fetch(currentPage, filter))
+    );
 
     res.send(`
       <html>
