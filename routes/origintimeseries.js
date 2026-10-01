@@ -1,189 +1,38 @@
 const express = require('express');
-// Counts on this page are request units from the edge proxy's rate limiter (the shared cost
-// table, getLogs plan D17), not raw requests like the dashboard: most calls 1, eth_getLogs
-// 2-11 by block range, blocks and block receipts 2, eth_feeHistory / eth_getProof by size
-// (eth_getLogs was 100 before 2026-09-28). The edge doesn't count buidlguidl-client traffic,
-// requests it rejects, or requests served by the fallback.
 const router = express.Router();
-const { Pool } = require('pg');
-const { SecretsManagerClient, GetSecretValueCommand } = require("@aws-sdk/client-secrets-manager");
-const path = require('path');
-const fs = require('fs');
+const { getTimeseries, ALLOWED_DAYS } = require('../utils/edgeTimeseries');
+const { timeseriesClient } = require('../utils/timeseriesClient');
 
-// Load .env from the project root directory
-require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
+// Top 30 origins by request units (summed over all IPs), hourly, from the edge's database
+// (utils/edgeTimeseries.js: cached, read-only, so the edge's own use of the database comes first).
+// The page redraws once a minute.
 
-async function getDbConnection() {
-  try {
-    if (!process.env.RDS_SECRET_NAME || !process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY || !process.env.DB_HOST) {
-      throw new Error('Required environment variables are missing. Please check your .env file.');
-    }
+const parseDays = (value) => (ALLOWED_DAYS.includes(parseInt(value)) ? parseInt(value) : 1);
 
-    const secret_name = process.env.RDS_SECRET_NAME;
-    const secretsClient = new SecretsManagerClient({ 
-      region: "us-east-1",
-      credentials: {
-        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-      }
-    });
-
-    const command = new GetSecretValueCommand({
-      SecretId: secret_name,
-      VersionStage: "AWSCURRENT",
-    });
-    const data = await secretsClient.send(command);
-    const secret = JSON.parse(data.SecretString);
-
-    const dbConfig = {
-      host: process.env.DB_HOST,
-      user: secret.username,
-      password: secret.password,
-      database: secret.dbname || 'postgres',
-      port: 5432,
-      ssl: {
-        rejectUnauthorized: true,
-        ca: fs.readFileSync('/home/ubuntu/shared/rds-ca-bundle.pem')
-      }
-    };
-
-    return new Pool(dbConfig);
-  } catch (error) {
-    console.error('Error setting up database connection:', error);
-    throw error;
-  }
+// JSON safe inside a <script> tag (and never containing '<html', which the navbar middleware looks for)
+function safeJson(value) {
+  return JSON.stringify(value).replace(/\//g, '\\/').replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
 }
 
-async function getOriginTimeseriesData(days = 7) {
-  let pool;
-  try {
-    pool = await getDbConnection();
-    
-    // Step 1: Get top 30 origins by total request count
-    const topOriginsResult = await pool.query(
-      `SELECT 
-         origin_key AS origin,
-         SUM((origin_value)::bigint)::bigint AS total_requests
-       FROM 
-         ip_history_table,
-         jsonb_each_text(origins) AS origin_data(origin_key, origin_value)
-       WHERE 
-         hour_timestamp >= EXTRACT(EPOCH FROM NOW() - INTERVAL '${days} days')
-       GROUP BY 
-         origin_key
-       ORDER BY 
-         total_requests DESC
-       LIMIT 30`
-    );
-    
-    const topOrigins = topOriginsResult.rows.map(row => row.origin);
-    
-    if (topOrigins.length === 0) {
-      return [];
-    }
-    
-    // Step 2: Get timeseries data for those top 30 origins
-    const timeseriesResult = await pool.query(
-      `SELECT 
-         hour_timestamp,
-         origin_key AS origin,
-         SUM((origin_value)::bigint)::bigint AS request_count
-       FROM 
-         ip_history_table,
-         jsonb_each_text(origins) AS origin_data(origin_key, origin_value)
-       WHERE 
-         hour_timestamp >= EXTRACT(EPOCH FROM NOW() - INTERVAL '${days} days')
-         AND origin_key = ANY($1)
-       GROUP BY 
-         hour_timestamp, origin_key
-       ORDER BY 
-         hour_timestamp ASC, origin_key`,
-      [topOrigins]
-    );
-    
-    return timeseriesResult.rows;
-  } catch (error) {
-    console.error('Error getting origin timeseries data:', error);
-    throw error;
-  } finally {
-    if (pool) {
-      await pool.end();
-    }
-  }
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 }
+
+// The page polls this once a minute (and on a day button)
+router.get("/origintimeseries/data", async (req, res) => {
+  try {
+    const data = await getTimeseries('origin', parseDays(req.query.days));
+    res.set('Cache-Control', 'no-store');
+    res.type('application/json').send(safeJson(data));
+  } catch (error) {
+    console.error('Error fetching origin timeseries data:', error.message);
+    res.status(502).json({ error: 'edge database unavailable' });
+  }
+});
 
 router.get("/origintimeseries", async (req, res) => {
   try {
-    const days = parseInt(req.query.days) || 1;
-    const data = await getOriginTimeseriesData(days);
-
-    if (data.length === 0) {
-      return res.send(`
-        <html>
-          <head>
-            <title>Origin Timeseries</title>
-            <style>
-              body { 
-                font-family: Arial, sans-serif;
-                margin: 0px;
-                padding: 0px;
-              }
-              .message {
-                color: #666;
-                font-size: 16px;
-              }
-            </style>
-          </head>
-          <body>
-            <h1>Origin Request Units Timeseries - Top 30 Origins</h1>
-            <p class="message">No data found in the database for the selected time range.</p>
-          </body>
-        </html>
-      `);
-    }
-
-    // First, collect all unique timestamps and organize data by origin
-    const allTimestamps = new Set();
-    const originDataMap = {};
-    
-    data.forEach(row => {
-      const timestamp = row.hour_timestamp;
-      allTimestamps.add(timestamp);
-      
-      if (!originDataMap[row.origin]) {
-        originDataMap[row.origin] = {};
-      }
-      // Explicitly convert to number to avoid string concatenation issues
-      // Handle both string and BigInt types from PostgreSQL
-      const requestCount = typeof row.request_count === 'bigint' 
-        ? Number(row.request_count) 
-        : parseInt(row.request_count, 10);
-      originDataMap[row.origin][timestamp] = requestCount;
-    });
-    
-    // Sort timestamps
-    const sortedTimestamps = Array.from(allTimestamps).sort((a, b) => a - b);
-    
-    // Fill in missing timestamps with 0 for each origin
-    const originData = {};
-    Object.keys(originDataMap).forEach(origin => {
-      originData[origin] = {
-        timestamps: [],
-        counts: []
-      };
-      
-      sortedTimestamps.forEach(timestamp => {
-        // Convert epoch timestamp (seconds) to milliseconds for JavaScript Date
-        originData[origin].timestamps.push(new Date(timestamp * 1000).toISOString());
-        // If this origin has data for this timestamp, use it; otherwise use 0
-        // Ensure the value is a number
-        const count = originDataMap[origin][timestamp];
-        originData[origin].counts.push(count !== undefined ? count : 0);
-      });
-    });
-
-    // Escape the data for safe injection into script tag
-    const safeData = JSON.stringify(originData).replace(/\//g, '\\/').replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
+    const initialPayload = safeJson(await getTimeseries('origin', parseDays(req.query.days)));
 
     res.send(`
       <html>
@@ -303,13 +152,24 @@ router.get("/origintimeseries", async (req, res) => {
               width: 40%;
               color: #666;
             }
+            .timeseries-status {
+              color: #666;
+              font-size: 13px;
+              margin-top: 4px;
+            }
+            .timeseries-status.problem {
+              color: #d9534f;
+            }
           </style>
         </head>
         <body>
           <div class="header-container">
-            <h1>Origin Request Units Timeseries - Top 30 Origins</h1>
+            <div>
+              <h1>Origin Request Units Timeseries - Top 30 Origins</h1>
+              <div id="timeseries-status" class="timeseries-status"></div>
+            </div>
             <div class="controls">
-              <button class="time-filter-btn active" data-days="1">1 Day</button>
+              <button class="time-filter-btn" data-days="1">1 Day</button>
               <button class="time-filter-btn" data-days="3">3 Days</button>
               <button class="time-filter-btn" data-days="7">1 Week</button>
               <button class="time-filter-btn" data-days="14">2 Weeks</button>
@@ -333,258 +193,61 @@ router.get("/origintimeseries", async (req, res) => {
           <div id="originTimeseriesPlot"></div>
 
           <script>
-            const originData = ${safeData};
-
-            // Define a color palette for the traces
-            const colors = [
-              '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
-              '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf',
-              '#aec7e8', '#ffbb78', '#98df8a', '#ff9896', '#c5b0d5',
-              '#c49c94', '#f7b6d2', '#c7c7c7', '#dbdb8d', '#9edae5',
-              '#e377c2', '#7f7f7f', '#bcbd22', '#17becf', '#1f77b4',
-              '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b'
-            ];
-
-            // Create traces for each origin
-            const traces = Object.entries(originData).map(([origin, data], index) => {
-              // Determine marker symbol based on ranking
-              let markerSymbol;
-              if (index < 10) {
-                markerSymbol = 'circle';  // Top 10
-              } else if (index < 20) {
-                markerSymbol = 'square';  // Middle 10
-              } else {
-                markerSymbol = 'diamond'; // Bottom 10
-              }
-              
-              // Create array of marker sizes: 0 for zero requests, 12 for non-zero
-              const markerSizes = data.counts.map(count => count > 0 ? 12 : 0);
-              
-              return {
-                name: origin,
-                x: data.timestamps,
-                y: data.counts,
-                type: 'scatter',
-                mode: 'lines+markers',
-                line: {
-                  color: colors[index % colors.length],
-                  width: 3
-                },
-                marker: {
-                  size: markerSizes,
-                  symbol: markerSymbol
-                },
-                hovertemplate: '<b>' + origin + '</b><br>Request units: %{y}<extra></extra>'
-              };
-            });
-
-            // Calculate x-axis range to eliminate blank spaces
-            let minTime = null;
-            let maxTime = null;
-            traces.forEach(trace => {
-              if (trace.x.length > 0) {
-                const firstTime = trace.x[0];
-                const lastTime = trace.x[trace.x.length - 1];
-                if (minTime === null || firstTime < minTime) minTime = firstTime;
-                if (maxTime === null || lastTime > maxTime) maxTime = lastTime;
-              }
-            });
-
-            // Calculate y-axis max value with padding
-            let maxY = 0;
-            traces.forEach(trace => {
-              const traceMax = Math.max(...trace.y);
-              if (traceMax > maxY) maxY = traceMax;
-            });
-            // Add 2% padding to the top
-            maxY = maxY * 1.02;
-
-            const layout = {
-              xaxis: {
-                title: 'Time (UTC)',
-                type: 'date',
-                showgrid: true,
-                range: [minTime, maxTime]  // Set exact range to eliminate blank spaces
-              },
-              yaxis: {
-                title: 'Request Units',
-                showgrid: true,
-                range: [0, maxY]  // Start at 0 and extend to max with padding
-              },
-              hovermode: 'closest',
-              showlegend: true,
-              legend: {
-                orientation: 'v',
-                x: 1.02,
-                y: 1,
-                xanchor: 'left',
-                yanchor: 'top',
-                itemclick: false,  // Disable default click behavior
-                itemdoubleclick: false  // Disable default double-click behavior
-              },
-              margin: {
-                l: 60,
-                r: 200,
-                t: 80,
-                b: 60
-              }
-            };
-
-            Plotly.newPlot('originTimeseriesPlot', traces, layout);
-
-            // Modal functionality
+            // Origin info modal (legend click): totals over the completed hours shown
             const modal = document.getElementById('originModal');
             const modalBody = document.getElementById('modalBody');
             const originTitle = document.getElementById('originTitle');
             const closeBtn = document.querySelector('.close');
 
-            function showOriginInfo(origin, data) {
-              originTitle.textContent = origin;
-              
-              const totalRequests = data.counts.reduce((sum, count) => sum + count, 0);
-              const avgRequests = (totalRequests / data.counts.length).toFixed(2);
-              const maxRequests = Math.max(...data.counts);
-              const activeHours = data.counts.filter(count => count > 0).length;
-              
-              let html = '<table class="origin-info-table">';
-              html += \`<tr><td>Origin</td><td>\${origin}</td></tr>\`;
-              html += \`<tr><td>Total Request Units</td><td>\${totalRequests.toLocaleString()}</td></tr>\`;
-              html += \`<tr><td>Average Request Units/Hour</td><td>\${avgRequests}</td></tr>\`;
-              html += \`<tr><td>Peak Request Units/Hour</td><td>\${maxRequests.toLocaleString()}</td></tr>\`;
-              html += \`<tr><td>Active Hours</td><td>\${activeHours} / \${data.counts.length}</td></tr>\`;
-              html += '</table>';
-              modalBody.innerHTML = html;
+            // Origin names come from callers: built as text, never as markup
+            function showOriginInfo(series) {
+              const counts = series.counts;
+              const totalRequests = counts.reduce((sum, count) => sum + count, 0);
+              const rows = [
+                ['Origin', series.key],
+                ['Total Request Units', totalRequests.toLocaleString()],
+                ['Average Request Units/Hour', counts.length ? (totalRequests / counts.length).toFixed(2) : '0'],
+                ['Peak Request Units/Hour', Math.max(0, ...counts).toLocaleString()],
+                ['Active Hours', counts.filter(count => count > 0).length + ' / ' + counts.length]
+              ];
+              originTitle.textContent = series.key;
+              const table = document.createElement('table');
+              table.className = 'origin-info-table';
+              rows.forEach(([label, value]) => {
+                const tr = table.insertRow();
+                tr.insertCell().textContent = label;
+                tr.insertCell().textContent = value;
+              });
+              modalBody.replaceChildren(table);
               modal.style.display = 'block';
             }
 
-            // Close modal handlers
             closeBtn.onclick = function() {
               modal.style.display = 'none';
             };
-
             window.onclick = function(event) {
               if (event.target === modal) {
                 modal.style.display = 'none';
               }
             };
-
-            // ESC key to close modal
             document.addEventListener('keydown', function(event) {
               if (event.key === 'Escape' && modal.style.display === 'block') {
                 modal.style.display = 'none';
               }
             });
 
-            // Add hover effect to highlight traces
-            const plotElement = document.getElementById('originTimeseriesPlot');
-            
-            plotElement.on('plotly_hover', function(data) {
-              const curveNumber = data.points[0].curveNumber;
-              const update = {
-                'line.width': traces.map((trace, idx) => idx === curveNumber ? 6 : 3),
-                'opacity': traces.map((trace, idx) => idx === curveNumber ? 1.0 : 0.3),
-                'marker.size': traces.map((trace, idx) => {
-                  return trace.y.map(count => {
-                    if (count === 0) return 0;
-                    return idx === curveNumber ? 18 : 12;
-                  });
-                })
-              };
-              Plotly.restyle('originTimeseriesPlot', update);
-            });
-
-            plotElement.on('plotly_unhover', function(data) {
-              const update = {
-                'line.width': traces.map(() => 3),
-                'opacity': traces.map(() => 1.0),
-                'marker.size': traces.map(trace => trace.y.map(count => count > 0 ? 12 : 0))
-              };
-              Plotly.restyle('originTimeseriesPlot', update);
-            });
-
-            // Add hover effect to legend items
-            setTimeout(() => {
-              // Try multiple selectors to find legend items
-              let legendItems = null;
-              const selectors = [
-                '#originTimeseriesPlot .legend .traces .trace',
-                '#originTimeseriesPlot g.traces > g.trace',
-                '#originTimeseriesPlot .legend text.legendtext'
-              ];
-              
-              for (const selector of selectors) {
-                const elements = document.querySelectorAll(selector);
-                if (elements.length > 0) {
-                  console.log('Found legend items with selector:', selector, 'Count:', elements.length);
-                  legendItems = elements;
-                  break;
-                }
-              }
-              
-              if (!legendItems) {
-                console.log('Could not find legend items. Available classes:', 
-                  Array.from(document.querySelectorAll('#originTimeseriesPlot *'))
-                    .filter(el => el.classList.length > 0)
-                    .map(el => el.className)
-                    .slice(0, 20)
-                );
-                return;
-              }
-              
-              legendItems.forEach((item, index) => {
-                // Find the parent group element if we selected text elements
-                const targetElement = item.tagName === 'text' ? item.closest('g.trace') || item.parentElement : item;
-                targetElement.style.cursor = 'pointer';
-                
-                // Add click handler for origin info
-                targetElement.addEventListener('click', (e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  const origin = traces[index].name;
-                  const data = originData[origin];
-                  showOriginInfo(origin, data);
-                });
-                
-                targetElement.addEventListener('mouseenter', () => {
-                  const update = {
-                    'line.width': traces.map((trace, idx) => idx === index ? 6 : 3),
-                    'opacity': traces.map((trace, idx) => idx === index ? 1.0 : 0.3),
-                    'marker.size': traces.map((trace, idx) => {
-                      return trace.y.map(count => {
-                        if (count === 0) return 0;
-                        return idx === index ? 18 : 12;
-                      });
-                    })
-                  };
-                  Plotly.restyle('originTimeseriesPlot', update);
-                });
-                
-                targetElement.addEventListener('mouseleave', () => {
-                  const update = {
-                    'line.width': traces.map(() => 3),
-                    'opacity': traces.map(() => 1.0),
-                    'marker.size': traces.map(trace => trace.y.map(count => count > 0 ? 12 : 0))
-                  };
-                  Plotly.restyle('originTimeseriesPlot', update);
-                });
-              });
-            }, 200);
-
-            // Add time filter button handlers
-            document.querySelectorAll('.time-filter-btn').forEach(btn => {
-              btn.addEventListener('click', () => {
-                const days = btn.getAttribute('data-days');
-                window.location.href = \`/origintimeseries?days=\${days}\`;
-              });
-            });
-
-            // Set active button based on current days parameter
-            const currentDays = ${days};
-            document.querySelectorAll('.time-filter-btn').forEach(btn => {
-              btn.classList.remove('active');
-              if (parseInt(btn.getAttribute('data-days')) === currentDays) {
-                btn.classList.add('active');
-              }
+            // Chart, hour in progress, day buttons, refresh: utils/timeseriesClient.js
+            (${timeseriesClient.toString()})({
+              plotId: 'originTimeseriesPlot',
+              statusId: 'timeseries-status',
+              dataPath: '/origintimeseries/data',
+              pagePath: '/origintimeseries',
+              initialPayload: ${initialPayload},
+              values: (series) => series.counts,
+              liveValue: (count) => count || 0,
+              scaleValues: (series) => series.counts,
+              scaleLiveValue: (count) => count || 0,
+              onLegendClick: (series) => showOriginInfo(series)
             });
           </script>
         </body>
@@ -603,7 +266,7 @@ router.get("/origintimeseries", async (req, res) => {
         </head>
         <body>
           <h1>Error Fetching Origin Timeseries Data</h1>
-          <p class="error">${error.message}</p>
+          <p class="error">${escapeHtml(error.message)}</p>
           <p>Please check your RDS database connection and ip_history_table schema.</p>
         </body>
       </html>
