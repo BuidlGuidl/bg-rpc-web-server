@@ -53,6 +53,15 @@ function formatStateHistory(history) {
   return 'N/A';
 }
 
+// RPC namespaces the node serves on 8545 (rpc_modules at check-in). Not reported (older client, or
+// not probed yet) → the pool routes as if eth, net (bg-rpc-docs NAMESPACE_ROUTING_PLAN.md D1).
+// Reported by the node, so escaped
+function formatNamespaces(modules) {
+  if (!Array.isArray(modules)) return '<span style="color: #888;" title="Not reported; the pool routes as if eth, net">eth, net (assumed)</span>';
+  const escape = (v) => String(v).replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
+  return modules.map(escape).join(', ') || 'none';
+}
+
 function generateTable(poolNodes) {
   let tableHtml = `
     <table border="1" style="border-collapse: collapse; width: 100%; margin: 20px 0px;">
@@ -60,13 +69,14 @@ function generateTable(poolNodes) {
         <tr style="background-color: #f2f2f2;">
           <th style="padding: 12px;">Node ID</th>
           <th style="padding: 12px;">Owner</th>
-          <th style="padding: 12px;">Node Version</th>
+          <th style="padding: 12px;">Block Info</th>
           <th style="padding: 12px;">Execution Client</th>
           <th style="padding: 12px;">Consensus Client</th>
-          <th style="padding: 12px;">System Usage</th>
-          <th style="padding: 12px;">Block Info</th>
-          <th style="padding: 12px;">History</th>
           <th style="padding: 12px;">Peers</th>
+          <th style="padding: 12px;">System Usage</th>
+          <th style="padding: 12px;">History</th>
+          <th style="padding: 12px;">RPC Namespaces</th>
+          <th style="padding: 12px;">Node Version</th>
           <th style="padding: 12px;">Git Info</th>
           <th style="padding: 12px;">Peer Details</th>
           <th style="padding: 12px;">Ports</th>
@@ -90,27 +100,28 @@ function generateTable(poolNodes) {
       <tr>
         <td style="padding: 8px;">${data.id || 'N/A'}</td>
         <td style="padding: 8px;">${data.owner || 'N/A'}</td>
-        <td style="padding: 8px;">${data.node_version || 'N/A'}</td>
+        <td style="padding: 8px;">
+          Number: ${data.block_number || 'N/A'}<br>
+          Hash: <span style="font-family: monospace; font-size: 0.9em; word-break: break-all;">${data.block_hash || 'N/A'}</span>
+        </td>
         <td style="padding: 8px;">${data.execution_client || 'N/A'}</td>
         <td style="padding: 8px;">${data.consensus_client || 'N/A'}</td>
+        <td style="padding: 8px;">
+          Execution: ${data.execution_peers || 'N/A'}<br>
+          Consensus: ${data.consensus_peers || 'N/A'}
+        </td>
         <td style="padding: 8px;">
           CPU: ${data.cpu_usage || 'N/A'}%<br>
           Memory: ${data.memory_usage || 'N/A'}%<br>
           Storage: ${data.storage_usage || 'N/A'}%
-        </td>
-        <td style="padding: 8px;">
-          Number: ${data.block_number || 'N/A'}<br>
-          Hash: <span style="font-family: monospace; font-size: 0.9em; word-break: break-all;">${data.block_hash || 'N/A'}</span>
         </td>
         <td style="padding: 8px; white-space: nowrap;">
           Receipts: ${formatFloor(data.receipt_floor)}<br>
           Bodies: ${formatFloor(data.body_floor)}<br>
           State: ${formatStateHistory(data.state_history)}
         </td>
-        <td style="padding: 8px;">
-          Execution: ${data.execution_peers || 'N/A'}<br>
-          Consensus: ${data.consensus_peers || 'N/A'}
-        </td>
+        <td style="padding: 8px;">${formatNamespaces(data.rpc_modules)}</td>
+        <td style="padding: 8px;">${data.node_version || 'N/A'}</td>
         <td style="padding: 8px;">
           Branch: ${data.git_branch || 'N/A'}<br>
           Last Commit: ${data.last_commit || 'N/A'}<br>
