@@ -238,7 +238,6 @@ router.get("/dashboard", async (req, res) => {
           <div class="dashboard-section">
             <h2>Request Duration Distribution</h2>
             <div id="methodDurationHist" class="hist-plot"></div>
-            <div id="originDurationHist" class="hist-plot"></div>
             <div id="nodeDurationHist" class="hist-plot"></div>
           </div>
 
@@ -681,73 +680,6 @@ router.get("/dashboard", async (req, res) => {
                 };
 
                 Plotly.react('methodDurationHist', methodTraces, methodLayout);
-              }
-
-              if (data.originDurationHist) {
-                const originTraces = Object.entries(data.originDurationHist).map(([origin, distribution], index) => {
-                  const color = colors[index % colors.length];
-                  const solidColor = solidColors[index % solidColors.length];
-                  return {
-                    type: 'box',
-                    x: [origin],
-                    lowerfence: [distribution.p1],
-                    q1: [distribution.p25],
-                    median: [distribution.p50],
-                    q3: [distribution.p75],
-                    upperfence: [distribution.p99],
-                    name: origin,
-                    boxpoints: false,
-                    fillcolor: color,
-                    line: {
-                      color: solidColor,
-                      width: 2
-                    },
-                    quartilemethod: "linear"
-                  };
-                });
-
-                const originLayout = {
-                  title: {
-                    text: 'Origin Duration Distribution (ms)',
-                    font: { size: 22 }
-                  },
-                  xaxis: {
-                    title: '',
-                    tickangle: -45,
-                    showticklabels: false,
-                    tickfont: {
-                      size: 12
-                    }
-                  },
-                  yaxis: {
-                    title: 'Duration (ms)',
-                    type: 'linear'
-                  },
-                  annotations: Object.keys(data.originDurationHist).map((origin, index) => ({
-                    x: origin,
-                    y: -0.1,
-                    text: origin,
-                    textangle: -45,
-                    showarrow: false,
-                    xanchor: 'right',
-                    yanchor: 'middle',
-                    font: {
-                      size: 12,
-                      color: solidColors[index % solidColors.length]
-                    },
-                    xref: 'x',
-                    yref: 'paper'
-                  })),
-                  margin: { t: 50, b: 120, l: 50, r: 25 },
-                  paper_bgcolor: "white",
-                  plot_bgcolor: "white",
-                  font: { size: 12 },
-                  showlegend: false,
-                  boxgap: 0.2,
-                  boxgroupgap: 0
-                };
-
-                Plotly.react('originDurationHist', originTraces, originLayout);
               }
 
               // Add Node Duration Distribution histogram

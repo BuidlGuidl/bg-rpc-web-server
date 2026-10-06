@@ -12,8 +12,8 @@ const hour = (hourMs, pool) => ({ hourMs, nCacheRequestsSuccess: 10, nCacheReque
   nPoolRequestsSuccess: pool, nPoolRequestsError: 1, nPoolRequestsWarning: 2, nFallbackRequestsSuccess: 3, nFallbackRequestsError: 0, nFallbackRequestsWarning: 0 });
 const dashboard = (poolNow, minutesIn) => ({
   timestamp: H + minutesIn * 60000, nTotalRequestsLastHour: 50, nCacheRequestsClientLastHour: 5, nCacheRequestsLastHour: 10,
-  nPoolRequestsLastHour: 30, nFallbackRequestsLastHour: 3, methodDurationHist: { eth_call: { p1: 1, p25: 2, p50: 3, p75: 4, p99: 5 } },
-  originDurationHist: { '<b>origin</b>': { p1: 1, p25: 2, p50: 3, p75: 4, p99: 5 } }, nodeDurationHist: {},
+  nPoolRequestsLastHour: 30, nFallbackRequestsLastHour: 3, methodDurationHist: { eth_call: { p1: 1, p25: 2, p50: 3, p75: 4, p99: 5 }, '<b>method</b>': { p1: 1, p25: 2, p50: 3, p75: 4, p99: 5 } },
+  nodeDurationHist: {},
   requestHistory: Array.from({ length: 72 }, (_, i) => hour(H - (72 - i) * HOUR, 100 + i)), // 3 days, last at 11:00
   requestHistoryCurrentHour: hour(H, poolNow)
 });
@@ -74,7 +74,7 @@ const trace = (env, plot, name) => env.elements[plot].data.find((t) => t.name ==
   let r = await get('/dashboard/data');
   assert.strictEqual(r.status, 200);
   assert.strictEqual(r.headers['Cache-Control'], 'no-store');
-  assert.ok(!r.body.includes('<'), 'no raw < (origin names come from callers)');
+  assert.ok(!r.body.includes('<'), 'no raw < (method and origin names come from callers)');
   const payload = JSON.parse(r.body);
   assert.deepStrictEqual(Object.keys(payload), ['data', 'nodeTimeoutData', 'nodeTimeoutDayData']);
   assert.strictEqual(payload.data.requestHistoryCurrentHour.nPoolRequestsSuccess, 40);
@@ -90,7 +90,7 @@ const trace = (env, plot, name) => env.elements[plot].data.find((t) => t.name ==
   vm.runInNewContext(script, env);
   await flush();
   for (const id of ['totalGauge', 'clientGauge1', 'gauge2', 'gauge3', 'gauge4', 'timeGauge1', 'warningGauge1', 'errorGauge1',
-    'methodDurationHist', 'originDurationHist', 'requestHistoryPlot', 'warningHistoryPlot', 'errorHistoryPlot', 'nodeTimeoutChart', 'nodeTimeoutDayChart']) {
+    'methodDurationHist', 'requestHistoryPlot', 'warningHistoryPlot', 'errorHistoryPlot', 'nodeTimeoutChart', 'nodeTimeoutDayChart']) {
     assert.ok(env.elements[id] && env.elements[id].data, `${id} drawn`);
   }
   assert.strictEqual(env.elements.totalGauge.data[0].value, 50);
