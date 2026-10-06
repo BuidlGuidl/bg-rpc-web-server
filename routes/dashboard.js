@@ -242,13 +242,8 @@ router.get("/dashboard", async (req, res) => {
           </div>
 
           <div class="dashboard-section">
-            <h2>Node Percent Timeout Last Week</h2>
+            <h2>Node Percent Timeout (Last Week and Last Day)</h2>
             <div id="nodeTimeoutChart" class="hist-plot"></div>
-          </div>
-
-          <div class="dashboard-section">
-            <h2>Node Percent Timeout Last Day</h2>
-            <div id="nodeTimeoutDayChart" class="hist-plot"></div>
           </div>
           
           <script>
@@ -797,127 +792,74 @@ router.get("/dashboard", async (req, res) => {
                 ownerColorMapping[owner] = nodeOwnerColorPalette[index % nodeOwnerColorPalette.length];
               });
 
-              // Calculate shared y-axis max for both timeout charts
-              let maxTimeoutPercent = 0;
-              if (nodeTimeoutData && nodeTimeoutData.length > 0) {
-                const maxWeek = Math.max(...nodeTimeoutData.map(node => node.percentTimeout * 100));
-                maxTimeoutPercent = Math.max(maxTimeoutPercent, maxWeek);
-              }
-              if (nodeTimeoutDayData && nodeTimeoutDayData.length > 0) {
-                const maxDay = Math.max(...nodeTimeoutDayData.map(node => node.percentTimeout * 100));
-                maxTimeoutPercent = Math.max(maxTimeoutPercent, maxDay);
-              }
-              // Add 10% padding to the max value for better visualization
-              const sharedYAxisMax = maxTimeoutPercent * 1.1;
+              // Node timeout percentages: one chart, two bars per node (last week solid, last day light) in the
+              // owner's color. Bars are placed by nodeId, since two nodes can share a short name, and labeled
+              // with the short name. A node missing from one period has no bar for it.
+              const weekNodes = nodeTimeoutData || [];
+              const dayNodes = nodeTimeoutDayData || [];
+              if (weekNodes.length > 0 || dayNodes.length > 0) {
+                // nodeId → { pretty, owner }: last week's order, then nodes seen only in the last day
+                const nodeInfo = new Map();
+                [...weekNodes, ...dayNodes].forEach(node => {
+                  if (!nodeInfo.has(node.nodeId)) nodeInfo.set(node.nodeId, { pretty: node.nodeIdPretty, owner: node.owner });
+                });
+                const ids = Array.from(nodeInfo.keys());
 
-              // Create Node Timeout Percent bar chart
-              if (nodeTimeoutData && nodeTimeoutData.length > 0) {
-                // Create bar chart data
-                const nodeIds = nodeTimeoutData.map(node => node.nodeIdPretty);
-                const percentages = nodeTimeoutData.map(node => (node.percentTimeout * 100).toFixed(2));
-                const barColors = nodeTimeoutData.map(node => ownerColorMapping[node.owner]);
-                const hoverText = nodeTimeoutData.map(node => 
-                  \`Node: \${node.nodeIdPretty}<br>Owner: \${node.owner}<br>Timeout: \${(node.percentTimeout * 100).toFixed(2)}%\`
-                );
-
-                const nodeTimeoutTrace = {
-                  type: 'bar',
-                  x: nodeIds,
-                  y: percentages,
-                  text: percentages.map(p => \`\${p}%\`),
-                  textposition: 'none',
-                  hovertemplate: '%{hovertext}<extra></extra>',
-                  hovertext: hoverText,
-                  marker: {
-                    color: barColors,
-                    line: {
-                      color: 'rgba(0,0,0,0.3)',
-                      width: 1
+                const periodTrace = (nodes, name, opacity) => {
+                  const percent = new Map(nodes.map(node => [node.nodeId, node.percentTimeout * 100]));
+                  return {
+                    type: 'bar',
+                    name: name,
+                    x: ids,
+                    y: ids.map(id => percent.has(id) ? Number(percent.get(id).toFixed(2)) : null),
+                    hovertext: ids.map(id => {
+                      const info = nodeInfo.get(id);
+                      const value = percent.has(id) ? percent.get(id).toFixed(2) + '%' : 'no requests';
+                      return \`Node: \${info.pretty}<br>Owner: \${info.owner}<br>\${name}: \${value}\`;
+                    }),
+                    hovertemplate: '%{hovertext}<extra></extra>',
+                    marker: {
+                      color: ids.map(id => ownerColorMapping[nodeInfo.get(id).owner]),
+                      opacity: opacity,
+                      line: { color: 'rgba(0,0,0,0.4)', width: 1 }
                     }
-                  }
+                  };
                 };
 
+                const maxPercent = Math.max(0, ...[...weekNodes, ...dayNodes].map(node => node.percentTimeout * 100));
                 const nodeTimeoutLayout = {
                   title: {
-                    text: 'Node Timeout Percentage Last Week',
+                    text: 'Node Timeout Percentage<br><sub>solid: last week, light: last day</sub>',
                     font: { size: 22 }
                   },
+                  barmode: 'group',
+                  bargap: 0.15,
+                  bargroupgap: 0.05,
                   xaxis: {
                     title: 'Node ID',
+                    type: 'category',
+                    tickmode: 'array',
+                    tickvals: ids,
+                    ticktext: ids.map(id => nodeInfo.get(id).pretty),
                     tickangle: -45,
-                    tickfont: {
-                      size: 10
-                    }
+                    tickfont: { size: 10 }
                   },
                   yaxis: {
                     title: 'Timeout Percentage (%)',
                     type: 'linear',
-                    range: [0, sharedYAxisMax]
+                    range: [0, maxPercent > 0 ? maxPercent * 1.1 : 1] // 10% headroom
                   },
-                  margin: { t: 50, b: 150, l: 60, r: 25 },
+                  margin: { t: 70, b: 150, l: 60, r: 25 },
                   paper_bgcolor: "white",
                   plot_bgcolor: "white",
                   font: { size: 12 },
-                  showlegend: false,
-                  bargap: 0.05
+                  showlegend: false
                 };
 
-                Plotly.react('nodeTimeoutChart', [nodeTimeoutTrace], nodeTimeoutLayout);
-              }
-
-              // Create Node Timeout Percent bar chart for last day
-              if (nodeTimeoutDayData && nodeTimeoutDayData.length > 0) {
-                // Create bar chart data
-                const nodeDayIds = nodeTimeoutDayData.map(node => node.nodeIdPretty);
-                const percentagesDay = nodeTimeoutDayData.map(node => (node.percentTimeout * 100).toFixed(2));
-                const barDayColors = nodeTimeoutDayData.map(node => ownerColorMapping[node.owner]);
-                const hoverDayText = nodeTimeoutDayData.map(node => 
-                  \`Node: \${node.nodeIdPretty}<br>Owner: \${node.owner}<br>Timeout: \${(node.percentTimeout * 100).toFixed(2)}%\`
-                );
-
-                const nodeTimeoutDayTrace = {
-                  type: 'bar',
-                  x: nodeDayIds,
-                  y: percentagesDay,
-                  text: percentagesDay.map(p => \`\${p}%\`),
-                  textposition: 'none',
-                  hovertemplate: '%{hovertext}<extra></extra>',
-                  hovertext: hoverDayText,
-                  marker: {
-                    color: barDayColors,
-                    line: {
-                      color: 'rgba(0,0,0,0.3)',
-                      width: 1
-                    }
-                  }
-                };
-
-                const nodeTimeoutDayLayout = {
-                  title: {
-                    text: 'Node Timeout Percentage Last Day',
-                    font: { size: 22 }
-                  },
-                  xaxis: {
-                    title: 'Node ID',
-                    tickangle: -45,
-                    tickfont: {
-                      size: 10
-                    }
-                  },
-                  yaxis: {
-                    title: 'Timeout Percentage (%)',
-                    type: 'linear',
-                    range: [0, sharedYAxisMax]
-                  },
-                  margin: { t: 50, b: 150, l: 60, r: 25 },
-                  paper_bgcolor: "white",
-                  plot_bgcolor: "white",
-                  font: { size: 12 },
-                  showlegend: false,
-                  bargap: 0.05
-                };
-
-                Plotly.react('nodeTimeoutDayChart', [nodeTimeoutDayTrace], nodeTimeoutDayLayout);
+                Plotly.react('nodeTimeoutChart', [
+                  periodTrace(weekNodes, 'Last week', 1),
+                  periodTrace(dayNodes, 'Last day', 0.45)
+                ], nodeTimeoutLayout);
               }
             }
 

@@ -17,12 +17,21 @@ const dashboard = (poolNow, minutesIn) => ({
   requestHistory: Array.from({ length: 72 }, (_, i) => hour(H - (72 - i) * HOUR, 100 + i)), // 3 days, last at 11:00
   requestHistoryCurrentHour: hour(H, poolNow)
 });
-const nodes = [{ nodeId: 'n1', nodeIdPretty: 'n1', owner: 'o', percentTimeout: 0.01 }];
+// Last week and last day list different nodes: n3 only last week; n1 and n2 share a short name
+const weekNodes = [
+  { nodeId: 'n1-aa', nodeIdPretty: 'box', owner: 'o', percentTimeout: 0.01 },
+  { nodeId: 'n2-bb', nodeIdPretty: 'box', owner: 'p', percentTimeout: 0.02 },
+  { nodeId: 'n3-cc', nodeIdPretty: 'old', owner: 'o', percentTimeout: 0.5 }
+];
+const dayNodes = [
+  { nodeId: 'n2-bb', nodeIdPretty: 'box', owner: 'p', percentTimeout: 0.04 },
+  { nodeId: 'n1-aa', nodeIdPretty: 'box', owner: 'o', percentTimeout: 0 }
+];
 let logsDown = false;
 axios.get = async (url) => {
   if (logsDown) throw new Error('connect ECONNREFUSED');
   const path = new URL(url).pathname;
-  return { data: path === '/dashboard' ? dashboard(40, 23) : nodes };
+  return { data: path === '/dashboard' ? dashboard(40, 23) : path === '/nodeTimeoutPercentLastDay' ? dayNodes : weekNodes };
 };
 const router = require('../routes/dashboard');
 const handler = (p) => router.stack.find((l) => l.route && l.route.path === p).route.stack[0].handle;
@@ -90,9 +99,23 @@ const trace = (env, plot, name) => env.elements[plot].data.find((t) => t.name ==
   vm.runInNewContext(script, env);
   await flush();
   for (const id of ['totalGauge', 'clientGauge1', 'gauge2', 'gauge3', 'gauge4', 'timeGauge1', 'warningGauge1', 'errorGauge1',
-    'methodDurationHist', 'requestHistoryPlot', 'warningHistoryPlot', 'errorHistoryPlot', 'nodeTimeoutChart', 'nodeTimeoutDayChart']) {
+    'methodDurationHist', 'requestHistoryPlot', 'warningHistoryPlot', 'errorHistoryPlot', 'nodeTimeoutChart']) {
     assert.ok(env.elements[id] && env.elements[id].data, `${id} drawn`);
   }
+  assert.ok(!env.elements.nodeTimeoutDayChart, 'last day is part of the node timeout chart now');
+
+  // node timeouts: one chart, a last-week and a last-day bar per node, placed by nodeId, labeled by short name
+  const timeouts = env.elements.nodeTimeoutChart;
+  same(timeouts.data.map((t) => t.name), ['Last week', 'Last day']);
+  same(timeouts.data[0].x, ['n1-aa', 'n2-bb', 'n3-cc']);
+  same(timeouts.data[0].y, [1, 2, 50]);
+  same(timeouts.data[1].y, [0, 4, null]); // n3 had no requests in the last day: no bar
+  same(timeouts.layout.xaxis.ticktext, ['box', 'box', 'old']);
+  assert.strictEqual(timeouts.layout.barmode, 'group');
+  assert.strictEqual(timeouts.data[0].marker.color[0], timeouts.data[1].marker.color[0], 'both bars in the owner color');
+  assert.notStrictEqual(timeouts.data[0].marker.color[0], timeouts.data[0].marker.color[1], 'owners told apart');
+  assert.ok(timeouts.data[1].hovertext[2].includes('no requests'));
+  assert.ok(Math.abs(timeouts.layout.yaxis.range[1] - 55) < 1e-9, '10% headroom over the highest bar');
   assert.strictEqual(env.elements.totalGauge.data[0].value, 50);
   assert.strictEqual(env.elements['dashboard-status'].textContent, 'Data as of 12:23:00 UTC, refreshes every minute');
 
