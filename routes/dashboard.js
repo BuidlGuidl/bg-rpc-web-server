@@ -288,6 +288,7 @@ router.get("/dashboard", async (req, res) => {
                 const gaugeData = [{
                   type: "indicator",
                   mode: "gauge+number",
+                  number: { valueformat: ',d' }, // exact counts; Plotly's default rounds big numbers to the axis tick precision
                   value: value,
                   title: { 
                     text: "Total Requests (Non-Client)",
@@ -318,6 +319,7 @@ router.get("/dashboard", async (req, res) => {
                 const gaugeData = [{
                   type: "indicator",
                   mode: "gauge+number",
+                  number: { valueformat: ',d' }, // exact counts; Plotly's default rounds big numbers to the axis tick precision
                   value: value,
                   title: { 
                     text: formatMetricName('nCacheRequestsClientLastHour'),
@@ -346,6 +348,7 @@ router.get("/dashboard", async (req, res) => {
                   const gaugeData = [{
                     type: "indicator",
                     mode: "gauge+number",
+                    number: { valueformat: ',d' }, // exact counts; Plotly's default rounds big numbers to the axis tick precision
                     value: value,
                     title: { 
                       text: formatMetricName('nWarningCacheRequestsClientLastHour'),
@@ -375,6 +378,7 @@ router.get("/dashboard", async (req, res) => {
                   const gaugeData = [{
                     type: "indicator",
                     mode: "gauge+number",
+                    number: { valueformat: ',d' }, // exact counts; Plotly's default rounds big numbers to the axis tick precision
                     value: value,
                     title: { 
                       text: formatMetricName('nErrorCacheRequestsClientLastHour'),
@@ -413,6 +417,7 @@ router.get("/dashboard", async (req, res) => {
                   const gaugeData = [{
                     type: "indicator",
                     mode: "gauge+number",
+                    number: { valueformat: ',d' }, // exact counts; Plotly's default rounds big numbers to the axis tick precision
                     value: value,
                     title: { 
                       text: formatMetricName(key),
@@ -492,6 +497,7 @@ router.get("/dashboard", async (req, res) => {
                 const gaugeData = [{
                   type: "indicator",
                   mode: "gauge+number",
+                  number: { valueformat: ',d' }, // exact counts; Plotly's default rounds big numbers to the axis tick precision
                   value: value,
                   title: { 
                     text: formatMetricName(key),
@@ -531,6 +537,7 @@ router.get("/dashboard", async (req, res) => {
                 const gaugeData = [{
                   type: "indicator",
                   mode: "gauge+number",
+                  number: { valueformat: ',d' }, // exact counts; Plotly's default rounds big numbers to the axis tick precision
                   value: value,
                   title: { 
                     text: formatMetricName(key),
