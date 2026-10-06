@@ -792,7 +792,7 @@ router.get("/dashboard", async (req, res) => {
                 ownerColorMapping[owner] = nodeOwnerColorPalette[index % nodeOwnerColorPalette.length];
               });
 
-              // Node timeout percentages: one chart, two bars per node (last week solid, last day light) in the
+              // Node timeout percentages: one chart, two bars per node (last day light, then last week solid) in the
               // owner's color. Bars are placed by nodeId, since two nodes can share a short name, and labeled
               // with the short name. A node missing from one period has no bar for it.
               const weekNodes = nodeTimeoutData || [];
@@ -829,7 +829,7 @@ router.get("/dashboard", async (req, res) => {
                 const maxPercent = Math.max(0, ...[...weekNodes, ...dayNodes].map(node => node.percentTimeout * 100));
                 const nodeTimeoutLayout = {
                   title: {
-                    text: 'Node Timeout Percentage<br><sub>solid: last week, light: last day</sub>',
+                    text: 'Node Timeout Percentage<br><sub>light: last day, solid: last week</sub>',
                     font: { size: 22 }
                   },
                   barmode: 'group',
@@ -856,9 +856,10 @@ router.get("/dashboard", async (req, res) => {
                   showlegend: false
                 };
 
+                // Day first: in a group, the first trace is the left bar
                 Plotly.react('nodeTimeoutChart', [
-                  periodTrace(weekNodes, 'Last week', 1),
-                  periodTrace(dayNodes, 'Last day', 0.45)
+                  periodTrace(dayNodes, 'Last day', 0.45),
+                  periodTrace(weekNodes, 'Last week', 1)
                 ], nodeTimeoutLayout);
               }
             }

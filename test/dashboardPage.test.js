@@ -106,15 +106,15 @@ const trace = (env, plot, name) => env.elements[plot].data.find((t) => t.name ==
 
   // node timeouts: one chart, a last-week and a last-day bar per node, placed by nodeId, labeled by short name
   const timeouts = env.elements.nodeTimeoutChart;
-  same(timeouts.data.map((t) => t.name), ['Last week', 'Last day']);
+  same(timeouts.data.map((t) => t.name), ['Last day', 'Last week']); // day bar on the left
   same(timeouts.data[0].x, ['n1-aa', 'n2-bb', 'n3-cc']);
-  same(timeouts.data[0].y, [1, 2, 50]);
-  same(timeouts.data[1].y, [0, 4, null]); // n3 had no requests in the last day: no bar
+  same(timeouts.data[0].y, [0, 4, null]); // n3 had no requests in the last day: no bar
+  same(timeouts.data[1].y, [1, 2, 50]);
   same(timeouts.layout.xaxis.ticktext, ['box', 'box', 'old']);
   assert.strictEqual(timeouts.layout.barmode, 'group');
   assert.strictEqual(timeouts.data[0].marker.color[0], timeouts.data[1].marker.color[0], 'both bars in the owner color');
-  assert.notStrictEqual(timeouts.data[0].marker.color[0], timeouts.data[0].marker.color[1], 'owners told apart');
-  assert.ok(timeouts.data[1].hovertext[2].includes('no requests'));
+  assert.notStrictEqual(timeouts.data[1].marker.color[0], timeouts.data[1].marker.color[1], 'owners told apart');
+  assert.ok(timeouts.data[0].hovertext[2].includes('no requests'));
   assert.ok(Math.abs(timeouts.layout.yaxis.range[1] - 55) < 1e-9, '10% headroom over the highest bar');
   assert.strictEqual(env.elements.totalGauge.data[0].value, 50);
   assert.strictEqual(env.elements['dashboard-status'].textContent, 'Data as of 12:23:00 UTC, refreshes every minute');
