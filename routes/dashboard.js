@@ -805,7 +805,13 @@ router.get("/dashboard", async (req, res) => {
                 });
                 const ids = Array.from(nodeInfo.keys());
 
-                const periodTrace = (nodes, name, opacity) => {
+                // The day bar's lighter shade is a real color (the owner color mixed with white), not opacity,
+                // so its tooltip, which takes the bar color, matches it
+                const lighten = (hex, amount) => {
+                  const rgb = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16));
+                  return 'rgb(' + rgb.map(c => Math.round(c + (255 - c) * amount)).join(', ') + ')';
+                };
+                const periodTrace = (nodes, name, lightness) => {
                   const percent = new Map(nodes.map(node => [node.nodeId, node.percentTimeout * 100]));
                   return {
                     type: 'bar',
@@ -819,8 +825,10 @@ router.get("/dashboard", async (req, res) => {
                     }),
                     hovertemplate: '%{hovertext}<extra></extra>',
                     marker: {
-                      color: ids.map(id => ownerColorMapping[nodeInfo.get(id).owner]),
-                      opacity: opacity,
+                      color: ids.map(id => {
+                        const color = ownerColorMapping[nodeInfo.get(id).owner];
+                        return lightness ? lighten(color, lightness) : color;
+                      }),
                       line: { color: 'rgba(0,0,0,0.4)', width: 1 }
                     }
                   };
@@ -858,8 +866,8 @@ router.get("/dashboard", async (req, res) => {
 
                 // Day first: in a group, the first trace is the left bar
                 Plotly.react('nodeTimeoutChart', [
-                  periodTrace(dayNodes, 'Last day', 0.45),
-                  periodTrace(weekNodes, 'Last week', 1)
+                  periodTrace(dayNodes, 'Last day', 0.55),
+                  periodTrace(weekNodes, 'Last week', 0)
                 ], nodeTimeoutLayout);
               }
             }

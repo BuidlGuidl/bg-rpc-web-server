@@ -112,7 +112,12 @@ const trace = (env, plot, name) => env.elements[plot].data.find((t) => t.name ==
   same(timeouts.data[1].y, [1, 2, 50]);
   same(timeouts.layout.xaxis.ticktext, ['box', 'box', 'old']);
   assert.strictEqual(timeouts.layout.barmode, 'group');
-  assert.strictEqual(timeouts.data[0].marker.color[0], timeouts.data[1].marker.color[0], 'both bars in the owner color');
+  // both bars in the owner color; the day bar a lighter shade as a real color (its tooltip takes it), not opacity
+  const ownerColor = timeouts.data[1].marker.color[0];
+  assert.match(ownerColor, /^#[0-9a-f]{6}$/);
+  const lighter = 'rgb(' + [1, 3, 5].map((i) => parseInt(ownerColor.slice(i, i + 2), 16)).map((c) => Math.round(c + (255 - c) * 0.55)).join(', ') + ')';
+  assert.strictEqual(timeouts.data[0].marker.color[0], lighter);
+  assert.strictEqual(timeouts.data[0].marker.opacity, undefined);
   assert.notStrictEqual(timeouts.data[1].marker.color[0], timeouts.data[1].marker.color[1], 'owners told apart');
   assert.ok(timeouts.data[0].hovertext[2].includes('no requests'));
   assert.ok(Math.abs(timeouts.layout.yaxis.range[1] - 55) < 1e-9, '10% headroom over the highest bar');
