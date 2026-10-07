@@ -84,8 +84,9 @@ router.get("/dashboard", async (req, res) => {
               color: white;
               border-color: #1f77b4;
             }
+            /* Grows with its four charts: each keeps a third of the window, as when there were three */
             #time-series-section {
-              height: 100vh;
+              min-height: 100vh;
               margin: 0;
               padding: 20px;
               display: flex;
@@ -97,9 +98,14 @@ router.get("/dashboard", async (req, res) => {
               margin-bottom: 5px;
             }
             #time-series-section .hist-plot {
-              flex: 1;
+              flex: none;
               height: calc((100vh - 150px) / 3);
               margin-bottom: 0px;
+            }
+            /* The bottom chart also holds the time labels (120px) and its legend (30px), which the
+               others don't (20px of margins): taller by the difference, so its plot area matches */
+            #time-series-section #poolTimeHistoryPlot {
+              height: calc((100vh - 150px) / 3 + 130px);
             }
             /* Make non-time-series hist-plot elements have height equal to window height */
             .dashboard-section:not(#time-series-section) .hist-plot {
@@ -233,6 +239,7 @@ router.get("/dashboard", async (req, res) => {
             <div id="requestHistoryPlot" class="hist-plot"></div>
             <div id="warningHistoryPlot" class="hist-plot"></div>
             <div id="errorHistoryPlot" class="hist-plot"></div>
+            <div id="poolTimeHistoryPlot" class="hist-plot"></div>
           </div>
 
           <div class="dashboard-section">
@@ -878,7 +885,16 @@ router.get("/dashboard", async (req, res) => {
             const historyPlots = [
               { id: 'requestHistoryPlot', field: 'Success', label: 'Requests', yTitle: 'Successful Requests / Hour' },
               { id: 'warningHistoryPlot', field: 'Warning', label: 'Warnings', yTitle: 'Warning Requests / Hour' },
-              { id: 'errorHistoryPlot', field: 'Error', label: 'Errors', yTitle: 'Number of Errors / Hour' }
+              { id: 'errorHistoryPlot', field: 'Error', label: 'Errors', yTitle: 'Number of Errors / Hour' },
+              // Percentiles of successful pool request time per hour (ms)
+              { id: 'poolTimeHistoryPlot', kind: 'poolTime', yTitle: 'Pool Request Time (ms)' }
+            ];
+            const poolTimePercentiles = [
+              { key: 'p1', label: 'p1', color: '#9e9e9e', width: 1.5 },
+              { key: 'p25', label: 'p25', color: '#6baed6', width: 1.5 },
+              { key: 'p50', label: 'p50', color: '#08519c', width: 3 },
+              { key: 'p75', label: 'p75', color: '#fd8d3c', width: 1.5 },
+              { key: 'p99', label: 'p99', color: '#d62728', width: 1.5 }
             ];
             const historySources = [
               { key: 'Cache', color: '#9370db' },     // Purple for Cache
@@ -889,7 +905,53 @@ router.get("/dashboard", async (req, res) => {
             let historyListening = false;
             let latestHistoryData = null;
 
+            // Pool request time: one line per percentile, the hour in progress dotted like the counts
+            function poolTimeTraces(data) {
+              const hours = data.poolTimeHistory || [];
+              const x = hours.map(entry => new Date(entry.hourMs).toISOString());
+              const traces = poolTimePercentiles.map(p => ({
+                name: p.label,
+                x: x,
+                y: hours.map(entry => entry[p.key]),
+                customdata: hours.map(entry => entry.n),
+                type: 'scatter',
+                mode: 'lines',
+                line: { color: p.color, width: p.width },
+                hovertemplate: '%{x|%Y-%m-%d %H:%M} UTC<br>%{y:.0f} ms (%{customdata} requests)<extra>' + p.label + '</extra>'
+              }));
+              const current = data.poolTimeCurrentHour;
+              if (current) {
+                const minutes = Math.max(0, Math.floor((data.timestamp - current.hourMs) / 60000));
+                const last = hours[hours.length - 1];
+                poolTimePercentiles.forEach(p => {
+                  const xs = [], ys = [], text = [];
+                  if (last && last.hourMs === current.hourMs - HOUR_MS) {
+                    xs.push(new Date(last.hourMs).toISOString());
+                    ys.push(last[p.key]);
+                    text.push(Math.round(last[p.key]) + ' ms (full hour, ' + last.n + ' requests)');
+                  }
+                  xs.push(new Date(current.hourMs).toISOString());
+                  ys.push(current[p.key]);
+                  text.push(Math.round(current[p.key]) + ' ms so far (' + current.n + ' requests, ' + minutes + ' min into the hour)');
+                  traces.push({
+                    name: p.label + ' (hour in progress)',
+                    x: xs,
+                    y: ys,
+                    text: text,
+                    type: 'scatter',
+                    mode: 'lines+markers',
+                    line: { color: p.color, width: p.width, dash: 'dot' },
+                    marker: { size: 5, color: p.color },
+                    showlegend: false,
+                    hovertemplate: '%{x|%Y-%m-%d %H:%M} UTC<br>%{text}<extra>' + p.label + '</extra>'
+                  });
+                });
+              }
+              return traces;
+            }
+
             function historyTraces(data, plot) {
+              if (plot.kind === 'poolTime') return poolTimeTraces(data);
               const hours = data.requestHistory || [];
               const x = hours.map(entry => new Date(entry.hourMs).toISOString());
               const traces = historySources.map(source => ({
@@ -940,14 +1002,16 @@ router.get("/dashboard", async (req, res) => {
               if (!isLast) {
                 Object.assign(xaxis, { showticklabels: false, ticks: '', title: '', zeroline: false, showgrid: true });
               }
+              const poolTime = plot.kind === 'poolTime';
               return {
                 xaxis: xaxis,
                 yaxis: { title: plot.yTitle, type: 'linear' },
-                margin: { t: 0, b: isLast ? 120 : 20, l: 50, r: 25 },
+                margin: { t: poolTime ? 30 : 0, b: isLast ? 120 : 20, l: 50, r: 25 },
                 paper_bgcolor: "white",
                 plot_bgcolor: "white",
                 font: { size: 12 },
-                showlegend: false
+                showlegend: poolTime,
+                legend: { orientation: 'h', x: 0, y: 1.12 }
               };
             }
 
@@ -1009,7 +1073,7 @@ router.get("/dashboard", async (req, res) => {
                 markHistoryButtons();
                 if (!historyListening) {
                   historyListening = true;
-                  // Dragging a range on one chart moves the other two, and ends the button window
+                  // Dragging a range on one chart moves the others, and ends the button window
                   historyPlots.forEach(plot => {
                     document.getElementById(plot.id).on('plotly_relayout', eventData => {
                       if (eventData['xaxis.range[0]'] !== undefined && eventData['xaxis.range[1]'] !== undefined) {

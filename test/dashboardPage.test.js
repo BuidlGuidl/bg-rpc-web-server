@@ -15,7 +15,10 @@ const dashboard = (poolNow, minutesIn) => ({
   nPoolRequestsLastHour: 30, nFallbackRequestsLastHour: 3, methodDurationHist: { eth_call: { p1: 1, p25: 2, p50: 3, p75: 4, p99: 5 }, '<b>method</b>': { p1: 1, p25: 2, p50: 3, p75: 4, p99: 5 } },
   nodeDurationHist: {},
   requestHistory: Array.from({ length: 72 }, (_, i) => hour(H - (72 - i) * HOUR, 100 + i)), // 3 days, last at 11:00
-  requestHistoryCurrentHour: hour(H, poolNow)
+  requestHistoryCurrentHour: hour(H, poolNow),
+  // pool request time percentiles (ms): 3 days of hours, p99 rising with the hour; the hour in progress
+  poolTimeHistory: Array.from({ length: 72 }, (_, i) => ({ hourMs: H - (72 - i) * HOUR, n: 200, p1: 50, p25: 60, p50: 75, p75: 120, p99: 300 + i })),
+  poolTimeCurrentHour: { hourMs: H, n: 40, p1: 52, p25: 61, p50: 80, p75: 130, p99: 500 }
 });
 // Last week and last day list different nodes: n3 only last week; n1 and n2 share a short name
 const weekNodes = [
@@ -99,7 +102,7 @@ const trace = (env, plot, name) => env.elements[plot].data.find((t) => t.name ==
   vm.runInNewContext(script, env);
   await flush();
   for (const id of ['totalGauge', 'clientGauge1', 'gauge2', 'gauge3', 'gauge4', 'timeGauge1', 'warningGauge1', 'errorGauge1',
-    'methodDurationHist', 'requestHistoryPlot', 'warningHistoryPlot', 'errorHistoryPlot', 'nodeTimeoutChart']) {
+    'methodDurationHist', 'requestHistoryPlot', 'warningHistoryPlot', 'errorHistoryPlot', 'poolTimeHistoryPlot', 'nodeTimeoutChart']) {
     assert.ok(env.elements[id] && env.elements[id].data, `${id} drawn`);
   }
   assert.ok(!env.elements.nodeTimeoutDayChart, 'last day is part of the node timeout chart now');
@@ -141,6 +144,27 @@ const trace = (env, plot, name) => env.elements[plot].data.find((t) => t.name ==
   assert.ok(Math.abs(y[1] - (171 + 16.8)) < 1e-9);
   assert.ok(env.buttons[0].classList.has('active'));
 
+  // pool request time: 5 percentile lines, the hour in progress dotted, same window
+  const poolTime = env.elements.poolTimeHistoryPlot;
+  same(poolTime.data.filter((t) => !t.name.includes('in progress')).map((t) => t.name), ['p1', 'p25', 'p50', 'p75', 'p99']);
+  same(trace(env, 'poolTimeHistoryPlot', 'p99').y.slice(-2), [370, 371]);
+  live = trace(env, 'poolTimeHistoryPlot', 'p99 (hour in progress)');
+  same(live.y, [371, 500]);
+  assert.strictEqual(live.line.dash, 'dot');
+  same(live.text, ['371 ms (full hour, 200 requests)', '500 ms so far (40 requests, 23 min into the hour)']);
+  assert.strictEqual(poolTime.layout.yaxis.type, 'linear');
+  same(poolTime.layout.xaxis.range, env.elements.requestHistoryPlot.layout.xaxis.range);
+  // visible values 50..500 ms, padded 10% of 450 each way
+  assert.ok(Math.abs(poolTime.layout.yaxis.range[0] - 5) < 1e-9);
+  assert.ok(Math.abs(poolTime.layout.yaxis.range[1] - 545) < 1e-9);
+  assert.strictEqual(poolTime.layout.showlegend, true);
+  assert.strictEqual(env.elements.requestHistoryPlot.layout.showlegend, false);
+  // its container is taller by the room its time labels and legend take, so the plot area matches the others
+  assert.ok(r.body.includes('#time-series-section #poolTimeHistoryPlot {\n              height: calc((100vh - 150px) / 3 + 130px);'));
+  // the bottom chart carries the time labels now
+  assert.strictEqual(env.elements.errorHistoryPlot.layout.xaxis.showticklabels, false);
+  assert.notStrictEqual(poolTime.layout.xaxis.showticklabels, false);
+
   // ---- once a minute: refetch and redraw in place
   const timer = env.timers[0];
   assert.strictEqual(timer.ms, 60000);
@@ -166,6 +190,7 @@ const trace = (env, plot, name) => env.elements[plot].data.find((t) => t.name ==
   await timer.f(); await flush();
   same(env.elements.requestHistoryPlot.layout.xaxis.range, dragged, 'kept across a refresh');
   same(env.elements.errorHistoryPlot.layout.xaxis.range, dragged);
+  same(env.elements.poolTimeHistoryPlot.layout.xaxis.range, dragged, 'the pool time chart follows too');
 
   // ---- a failed update says so and keeps polling
   env.fetchResponses.push(new Error('Failed to fetch'));
