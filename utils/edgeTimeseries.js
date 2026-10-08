@@ -63,7 +63,11 @@ async function loadIpHistory(cutoff) {
       LIMIT ${TOP_N}`,
     [cutoff]
   );
-  const keys = top.rows.map(row => row.ip);
+  return loadIpSeries(cutoff, top.rows.map(row => row.ip));
+}
+
+// Hourly series for the given IPs over the window, in the given order
+async function loadIpSeries(cutoff, keys) {
   if (keys.length === 0) return { hours: [], series: [] };
   const { rows } = await edgeDb.query(
     `SELECT hour_timestamp, ip, request_count, origins
@@ -107,7 +111,11 @@ async function loadOriginHistory(cutoff) {
       LIMIT ${TOP_N}`,
     [cutoff]
   );
-  const keys = top.rows.map(row => row.origin);
+  return loadOriginSeries(cutoff, top.rows.map(row => row.origin));
+}
+
+// Hourly series for the given origins over the window (summed over IPs), in the given order
+async function loadOriginSeries(cutoff, keys) {
   if (keys.length === 0) return { hours: [], series: [] };
   const { rows } = await edgeDb.query(
     `SELECT hour_timestamp, origin_key AS origin, SUM(origin_value::bigint) AS request_count
@@ -131,6 +139,18 @@ async function loadOriginHistory(cutoff) {
 const KINDS = {
   ip: {
     loadHistory: loadIpHistory,
+    loadSeries: loadIpSeries,
+    seriesTotal: (s) => s.countsTotal.reduce((sum, n) => sum + n, 0),
+    zeroPoint: () => ({ total: 0, withOrigin: 0, withoutOrigin: 0 }),
+    pick: (s, i) => ({ total: s.countsTotal[i], withOrigin: s.countsWithOrigin[i], withoutOrigin: s.countsWithoutOrigin[i] }),
+    build: (key, points) => ({
+      key,
+      countsTotal: points.map(p => p.total),
+      countsWithOrigin: points.map(p => p.withOrigin),
+      countsWithoutOrigin: points.map(p => p.withoutOrigin)
+    }),
+    // requests in the hour in progress, per IP
+    liveTotals: (rows) => new Map(rows.map(row => [row.ip, Number(row.requests_last_hour)])),
     // live counts for the shown IPs, in the same shape as a history point
     live: (rows, keys) => {
       const byIp = new Map(rows.map(row => [row.ip, row]));
@@ -144,6 +164,19 @@ const KINDS = {
   },
   origin: {
     loadHistory: loadOriginHistory,
+    loadSeries: loadOriginSeries,
+    seriesTotal: (s) => s.counts.reduce((sum, n) => sum + n, 0),
+    zeroPoint: () => 0,
+    pick: (s, i) => s.counts[i],
+    build: (key, points) => ({ key, counts: points }),
+    // requests in the hour in progress, per origin (summed over IPs)
+    liveTotals: (rows) => {
+      const totals = new Map();
+      rows.forEach(row => Object.entries(row.origins_last_hour || {}).forEach(([origin, count]) => {
+        totals.set(origin, (totals.get(origin) || 0) + Number(count));
+      }));
+      return totals;
+    },
     live: (rows, keys) => {
       const counts = Object.fromEntries(keys.map(origin => [origin, 0]));
       rows.forEach(row => Object.entries(row.origins_last_hour || {}).forEach(([origin, count]) => {
@@ -168,9 +201,69 @@ function history(kind, days, latest) {
   return promise;
 }
 
+// Series for keys that rank in only through the hour in progress. Completed hours don't change, so a
+// result is reused until a newer hour appears, like the top 30's.
+const extraCache = new Map(); // `${kind}:${days}:${keys}` -> { latest, promise }
+function extraSeries(kind, days, latest, keys) {
+  const cacheKey = `${kind}:${days}:${keys.join(',')}`;
+  const hit = extraCache.get(cacheKey);
+  if (hit && hit.latest === latest) return hit.promise;
+  for (const [k, v] of extraCache) if (v.latest !== latest) extraCache.delete(k);
+  const cutoff = latest === null ? 0 : latest + HOUR_S - days * 24 * HOUR_S;
+  const promise = KINDS[kind].loadSeries(cutoff, keys);
+  extraCache.set(cacheKey, { latest, promise });
+  promise.catch(() => { if (extraCache.get(cacheKey)?.promise === promise) extraCache.delete(cacheKey); });
+  return promise;
+}
+
+// Both series lists on one set of hours (the union), keyed by series key
+function alignSeries(kind, a, b) {
+  const hours = [...new Set([...a.hours, ...b.hours])].sort((x, y) => x - y);
+  const byKey = new Map();
+  for (const part of [a, b]) {
+    const index = new Map(part.hours.map((hour, i) => [hour, i]));
+    part.series.forEach(s => byKey.set(s.key, KINDS[kind].build(s.key,
+      hours.map(hour => (index.has(hour) ? KINDS[kind].pick(s, index.get(hour)) : KINDS[kind].zeroPoint())))));
+  }
+  return { hours, byKey };
+}
+
+/**
+ * Rank by completed hours plus the hour in progress, so a key that is busy right now shows up within
+ * a minute instead of only once its hour is written to history. The top 30 by history is cached. A
+ * key outside it is considered only if its count in the hour in progress alone beats the 30th
+ * combined total (any count, if fewer than 30 keys are shown); only those keys' series are fetched,
+ * and they're then ranked on their full totals. A key just below the 30th place with a little extra
+ * traffic now isn't considered: it shows up once the hour is written to history, as before.
+ */
+async function rankWithLive(kind, days, latest, past, liveTotals) {
+  const kindDef = KINDS[kind];
+  const historyTotal = new Map(past.series.map(s => [s.key, kindDef.seriesTotal(s)]));
+  const combined = (key) => (historyTotal.get(key) || 0) + (liveTotals.get(key) || 0);
+  const pastCombined = past.series.map(s => combined(s.key)).sort((x, y) => y - x);
+  const bar = past.series.length >= TOP_N ? pastCombined[TOP_N - 1] : 0;
+  const extraKeys = [...liveTotals.keys()]
+    .filter(key => !historyTotal.has(key) && liveTotals.get(key) > bar)
+    .sort((x, y) => liveTotals.get(y) - liveTotals.get(x) || (x < y ? -1 : 1))
+    .slice(0, TOP_N);
+  let aligned = { hours: past.hours, byKey: new Map(past.series.map(s => [s.key, s])) };
+  if (extraKeys.length > 0) {
+    const extra = await extraSeries(kind, days, latest, extraKeys);
+    extra.series.forEach(s => historyTotal.set(s.key, kindDef.seriesTotal(s)));
+    // keys with no completed hours in the window still get a series of zeros
+    const missing = extraKeys.filter(key => !extra.series.some(s => s.key === key));
+    const zeros = { hours: [], series: missing.map(key => kindDef.build(key, [])) };
+    aligned = alignSeries(kind, past, { hours: extra.hours, series: [...extra.series, ...zeros.series] });
+  }
+  const keys = [...aligned.byKey.keys()]
+    .sort((x, y) => combined(y) - combined(x) || (x < y ? -1 : 1))
+    .slice(0, TOP_N);
+  return { hours: aligned.hours, series: keys.map(key => aligned.byKey.get(key)) };
+}
+
 /**
  * One page's data: { days, hours (ISO), series, live, asOf }. series: the top 30 (IP or origin) over
- * the window, in rank order. live: { hour (ISO), byKey } for the hour in progress, or null (shown
+ * the window plus the hour in progress (rankWithLive), in rank order. live: { hour (ISO), byKey } for the hour in progress, or null (shown
  * only when newer than the newest completed hour, so an hour the edge is just moving into history
  * isn't counted twice).
  */
@@ -179,11 +272,13 @@ async function getTimeseries(kind, days) {
   if (!ALLOWED_DAYS.includes(days)) throw new Error(`days must be one of ${ALLOWED_DAYS.join(', ')}`);
   const latest = await latestHistoryHour();
   const [past, current] = await Promise.all([history(kind, days, latest), liveCounters()]);
-  const keys = past.series.map(s => s.key);
-  const live = current.hour !== null && (latest === null || current.hour > latest) && keys.length
+  const liveApplies = current.hour !== null && (latest === null || current.hour > latest);
+  const ranked = liveApplies ? await rankWithLive(kind, days, latest, past, KINDS[kind].liveTotals(current.rows)) : past;
+  const keys = ranked.series.map(s => s.key);
+  const live = liveApplies && keys.length
     ? { hour: isoHour(current.hour), byKey: KINDS[kind].live(current.rows, keys) }
     : null;
-  return { days, hours: past.hours.map(isoHour), series: past.series, live, asOf: current.asOf };
+  return { days, hours: ranked.hours.map(isoHour), series: ranked.series, live, asOf: current.asOf };
 }
 
 module.exports = { getTimeseries, ALLOWED_DAYS, TOP_N };
