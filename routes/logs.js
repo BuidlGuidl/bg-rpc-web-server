@@ -77,6 +77,9 @@ const TABLES = {
   fallbackLogs: { title: 'Fallback Request Logs', fetch: (page, filter, search) => fetchRequestLogs('/fallbackRequests', page, filter, search) },
   cacheLogs: { title: 'Cache Request Logs', fetch: (page, filter, search) => fetchRequestLogs('/cacheRequests', page, filter, search) },
   poolNodeLogs: { title: 'Pool Node Logs', fetch: (page, filter, search) => fetchPage('/poolNodes', page, filter, search) },
+  // Requests bg-rpc-proxy answered by sharing an identical request in flight (request merging). The
+  // logs service gives each its own cache line's status, params and error class
+  mergedLogs: { title: 'Merged Request Logs', fetch: (page, filter, search) => fetchPage('/mergedRequests', page, filter, search) },
   poolCompareResults: { title: 'Pool Compare Results', fetch: (page, filter, search) => fetchPage('/poolCompareResults', page, filter, search), isCompare: true }
 };
 
@@ -143,6 +146,23 @@ function renderNodeRow(log) {
               <td>${escapeHtml(log.duration)}</td>
               <td>${escapeHtml(log.status)}</td>
               <td>${escapeHtml(log.method)}</td>
+              <td>${escapeHtml(log.params)}</td>
+            </tr>
+          `;
+}
+
+// A merged request: waited for an identical request already in flight instead of reaching a node
+function renderMergedRow(log) {
+  return `
+            <tr${getRowClass(log)}>
+              <td>${escapeHtml(log.timestamp)}</td>
+              <td>${escapeHtml(log.waitMs)}</td>
+              <td>${escapeHtml(log.status)}</td>
+              <td>${escapeHtml(log.requester)}</td>
+              <td>${escapeHtml(log.ip)}</td>
+              <td>${escapeHtml(log.method)}</td>
+              <td>${log.sameCaller ? 'yes' : 'no'}</td>
+              <td>${escapeHtml(log.gapMs)}</td>
               <td>${escapeHtml(log.params)}</td>
             </tr>
           `;
@@ -216,7 +236,7 @@ function renderSearchBar(tableId, methods) {
 
 function renderTable({ total, methods, entries: pageData }, title, currentPage, tableId, isAjax = false) {
   const totalPages = Math.ceil(total / logItemsPerPage);
-  const renderRow = tableId === 'poolNodeLogs' ? renderNodeRow : renderRequestRow;
+  const renderRow = tableId === 'poolNodeLogs' ? renderNodeRow : tableId === 'mergedLogs' ? renderMergedRow : renderRequestRow;
   const pagination = total > logItemsPerPage ? renderPagination(currentPage, totalPages, '', tableId) : '';
 
   if (isAjax) {
@@ -246,6 +266,16 @@ function renderTable({ total, methods, entries: pageData }, title, currentPage, 
             <th>Duration (ms)</th>
             <th>Status</th>
             <th>Method</th>
+            <th>Params</th>
+            ` : tableId === 'mergedLogs' ? `
+            <th>Timestamp</th>
+            <th>Wait (ms)</th>
+            <th>Status</th>
+            <th>Origin</th>
+            <th>IP</th>
+            <th>Method</th>
+            <th title="Same origin and IP as the request it merged into">Same caller</th>
+            <th title="How long after the first identical request this one arrived">After first (ms)</th>
             <th>Params</th>
             ` : `
             <th>Timestamp</th>
@@ -333,8 +363,8 @@ router.get("/logs", async (req, res) => {
       return res.json(rendered);
     }
 
-    const [poolLogs, fallbackLogs, cacheLogs, poolNodeLogs, poolCompareResults] = await Promise.all(
-      ['poolLogs', 'fallbackLogs', 'cacheLogs', 'poolNodeLogs', 'poolCompareResults'].map(id => TABLES[id].fetch(currentPage, filter, search))
+    const [poolLogs, fallbackLogs, cacheLogs, poolNodeLogs, mergedLogs, poolCompareResults] = await Promise.all(
+      ['poolLogs', 'fallbackLogs', 'cacheLogs', 'poolNodeLogs', 'mergedLogs', 'poolCompareResults'].map(id => TABLES[id].fetch(currentPage, filter, search))
     );
 
     res.send(`
@@ -401,6 +431,7 @@ router.get("/logs", async (req, res) => {
             #fallbackLogs,
             #cacheLogs,
             #poolNodeLogs,
+            #mergedLogs,
             #poolCompareResults {
               min-height: 1187px;
             }
@@ -475,6 +506,7 @@ router.get("/logs", async (req, res) => {
               fallbackLogs: { page: 1, filter: 'no-client', method: '', q: '' },
               cacheLogs: { page: 1, filter: 'no-client', method: '', q: '' },
               poolNodeLogs: { page: 1, filter: 'all', method: '', q: '' },
+              mergedLogs: { page: 1, filter: 'no-client', method: '', q: '' },
               poolCompareResults: { page: 1, filter: 'all', method: '', q: '' }
             };
             const latestRequest = {};
@@ -485,6 +517,7 @@ router.get("/logs", async (req, res) => {
               filterLogs('cacheLogs', 'no-client');
               filterLogs('poolLogs', 'no-client');
               filterLogs('fallbackLogs', 'no-client');
+              filterLogs('mergedLogs', 'no-client');
             };
 
             function showModal(content) {
@@ -605,6 +638,7 @@ router.get("/logs", async (req, res) => {
             ${renderTable(fallbackLogs, 'Fallback Request Logs', currentPage, 'fallbackLogs')}
             <h1>Pool Node Logs</h1>
             ${renderTable(poolNodeLogs, 'Pool Node Logs', currentPage, 'poolNodeLogs')}
+            ${renderTable(mergedLogs, 'Merged Request Logs', currentPage, 'mergedLogs')}
             ${renderCompareTable(poolCompareResults, 'Pool Compare Results', currentPage, 'poolCompareResults')}
           </div>
           </body>
