@@ -128,7 +128,7 @@ function renderRequestRow(log) {
             <tr${getRowClass(log)}>
               <td>${escapeHtml(log.timestamp)}</td>
               <td>${escapeHtml(log.duration)}</td>
-              <td>${escapeHtml(log.status)}</td>
+              <td>${formatStatus(log.status)}</td>
               <td>${escapeHtml(log.origin)}</td>
               <td>${escapeHtml(log.ip)}</td>
               <td>${escapeHtml(log.method)}</td>
@@ -151,18 +151,23 @@ function renderNodeRow(log) {
           `;
 }
 
-// A merged request: waited for an identical request already in flight instead of reaching a node
+// A merged request: waited for an identical request already in flight instead of reaching a node.
+// Times in the order they happened: it arrived gapMs after the first request started, then waited
+// waitMs for the shared answer, so the first request took gapMs + waitMs in all (exact: the wait
+// ends when the first request settles).
 function renderMergedRow(log) {
+  const firstTook = Number.isFinite(log.gapMs) && Number.isFinite(log.waitMs) ? log.gapMs + log.waitMs : '';
   return `
             <tr${getRowClass(log)}>
               <td>${escapeHtml(log.timestamp)}</td>
+              <td>${escapeHtml(log.gapMs)}</td>
               <td>${escapeHtml(log.waitMs)}</td>
-              <td>${escapeHtml(log.status)}</td>
+              <td>${escapeHtml(firstTook)}</td>
+              <td>${formatStatus(log.status)}</td>
               <td>${escapeHtml(log.requester)}</td>
               <td>${escapeHtml(log.ip)}</td>
               <td>${escapeHtml(log.method)}</td>
               <td>${log.sameCaller ? 'yes' : 'no'}</td>
-              <td>${escapeHtml(log.gapMs)}</td>
               <td>${escapeHtml(log.params)}</td>
             </tr>
           `;
@@ -172,6 +177,26 @@ function renderMergedRow(log) {
 // HTML-escaped (the browser unescapes the attribute before running it).
 function modalLink(value, label) {
   return `<a class="view-object-link" onclick="showModal(${escapeHtml(JSON.stringify(value))})">${label}</a>`;
+}
+
+// A request's status, short: an error's code and message (its data, often a long hex string with
+// no place to wrap, stretched the column), with the full JSON behind a View link. success and other
+// short text as is; anything else long goes behind the link. Display only: the logs service keeps
+// the full status, so search still finds text inside it.
+const STATUS_INLINE_CHARS = 120;
+function formatStatus(status) {
+  if (typeof status !== 'string') return escapeHtml(status ?? '');
+  let parsed = null;
+  if (status.startsWith('{')) {
+    try { parsed = JSON.parse(status); } catch { parsed = null; }
+  }
+  const error = parsed && typeof parsed === 'object' ? (parsed.error && typeof parsed.error === 'object' ? parsed.error : parsed) : null;
+  if (error && (error.code !== undefined || error.message !== undefined)) {
+    const summary = [error.code, error.message].filter(v => v !== undefined && v !== null && v !== '').join(': ');
+    return `${escapeHtml(summary)} ${modalLink(parsed, 'View')}`;
+  }
+  if (parsed && typeof parsed === 'object') return modalLink(parsed, 'View Object');
+  return status.length > STATUS_INLINE_CHARS ? `${escapeHtml(status.slice(0, STATUS_INLINE_CHARS))}… ${modalLink(status, 'View')}` : escapeHtml(status);
 }
 
 // A node's result in the compare table: short values inline, objects and long values behind a link
@@ -269,13 +294,14 @@ function renderTable({ total, methods, entries: pageData }, title, currentPage, 
             <th>Params</th>
             ` : tableId === 'mergedLogs' ? `
             <th>Timestamp</th>
-            <th>Wait (ms)</th>
+            <th title="How long after the first identical request started this one arrived">After first (ms)</th>
+            <th title="How long this request then waited for the shared answer">Wait (ms)</th>
+            <th title="How long the first request took in all: After first + Wait">First took (ms)</th>
             <th>Status</th>
             <th>Origin</th>
             <th>IP</th>
             <th>Method</th>
             <th title="Same origin and IP as the request it merged into">Same caller</th>
-            <th title="How long after the first identical request this one arrived">After first (ms)</th>
             <th>Params</th>
             ` : `
             <th>Timestamp</th>
@@ -524,6 +550,8 @@ router.get("/logs", async (req, res) => {
               const modal = document.getElementById('objectModal');
               // As text: the content comes from nodes
               const pre = document.createElement('pre');
+              pre.style.whiteSpace = 'pre-wrap';
+              pre.style.wordBreak = 'break-all'; // long hex values wrap instead of scrolling sideways
               pre.textContent = JSON.stringify(content, null, 2);
               document.getElementById('modalContent').replaceChildren(pre);
               modal.style.display = 'block';

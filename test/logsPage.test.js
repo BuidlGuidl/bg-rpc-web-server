@@ -22,7 +22,8 @@ axios.get = async (url, config) => {
   if (url.endsWith('/cacheRequests')) {
     return { data: { total: 1, methods: [XSS], entries: [{ ...row(5, 'error'), requester: XSS, params: XSS, status: XSS, method: XSS }] } };
   }
-  return { data: { total: 95, methods: ['eth_blockNumber', 'eth_call'], entries: [row(1, 'error'), row(2, 'warning'), row(3, 'caller'), row(4, 'ok')] } };
+  const revert = { ...row(3, 'caller'), status: JSON.stringify({ jsonrpc: '2.0', error: { code: 3, message: 'execution reverted: ERC20: transfer amount exceeds balance', data: '0x08c379a0' + 'ab'.repeat(100) }, id: 'rv-3' }) };
+  return { data: { total: 95, methods: ['eth_blockNumber', 'eth_call'], entries: [row(1, 'error'), row(2, 'warning'), revert, row(4, 'ok')] } };
 };
 const handler = require('../routes/logs').stack.find((l) => l.route && l.route.path === '/logs').route.stack[0].handle;
 const get = (query) => new Promise((resolve) => {
@@ -43,6 +44,12 @@ const unescapeHtml = (s) => s.replace(/&(amp|lt|gt|quot|#39);/g, (m, e) => ({ am
   const pool = r.body.slice(r.body.indexOf('id="poolLogs-body"'));
   assert.deepStrictEqual([...pool.slice(0, pool.indexOf('</tbody>')).matchAll(/<tr( class="(\w+)")?>/g)].map((m) => m[2] || ''),
     ['error', 'warning', '', ''], 'row colours from errorClass; a caller\'s mistake is plain');
+  // a long error status: code and message in the cell, the full JSON (with its hex data) behind View
+  const poolBody = pool.slice(0, pool.indexOf('</tbody>'));
+  assert.ok(poolBody.includes('<td>3: execution reverted: ERC20: transfer amount exceeds balance <a class="view-object-link" onclick="showModal('), 'short status with a View link');
+  const statusLink = [...poolBody.matchAll(/onclick="showModal\((.*?)\)">View<\/a>/g)].map((x) => JSON.parse(unescapeHtml(x[1])));
+  assert.strictEqual(statusLink[0].error.data, '0x08c379a0' + 'ab'.repeat(100), 'the full status in the popup');
+  assert.ok(!poolBody.replace(/onclick="[^"]*"/g, '').includes('abababab'), 'no hex data in the visible cell');
   assert.ok(r.body.includes('<select id="poolLogs-method" onchange="searchLogs(\'poolLogs\')">'));
   assert.ok(r.body.includes('<option value="eth_blockNumber">eth_blockNumber</option>'), 'methods in the dropdown');
   assert.ok(r.body.includes('<input id="poolNodeLogs-q"'), 'node table has a search box');
@@ -56,10 +63,13 @@ const unescapeHtml = (s) => s.replace(/&(amp|lt|gt|quot|#39);/g, (m, e) => ({ am
   assert.ok(r.body.includes('<div id="mergedLogs-pagination">'));
   assert.ok(r.body.includes("filterLogs('mergedLogs', 'no-client');"), 'loads with No Client, like the request tables');
   const mergedBody = r.body.slice(r.body.indexOf('id="mergedLogs-body"'), r.body.indexOf('id="mergedLogs-pagination"'));
-  assert.ok(mergedBody.includes('<td>40</td>') && mergedBody.includes('<td>21</td>') && mergedBody.includes('<td>yes</td>') && mergedBody.includes('<td>no</td>'),
-    'wait, gap and same caller shown');
+  assert.ok(mergedBody.includes('<td>yes</td>') && mergedBody.includes('<td>no</td>'), 'same caller shown');
+  // after Timestamp, in the order they happened: after first (21), wait (40), first took (61)
+  assert.ok(mergedBody.includes('<td>t7</td>\n              <td>21</td>\n              <td>40</td>\n              <td>61</td>'), 'times after the timestamp, in order');
+  const heads = [...r.body.slice(r.body.indexOf('id="mergedLogs"'), r.body.indexOf('id="mergedLogs-body"')).matchAll(/<th[^>]*>([^<]+)<\/th>/g)].map((x) => x[1]);
+  assert.deepStrictEqual(heads, ['Timestamp', 'After first (ms)', 'Wait (ms)', 'First took (ms)', 'Status', 'Origin', 'IP', 'Method', 'Same caller', 'Params']);
   assert.strictEqual(mergedBody.split(`<td>${'&lt;img src=x onerror=alert(1)&gt;&quot;&#39;&amp;'}</td>`).length - 1, 3, 'status, origin and params escaped');
-  assert.ok(r.body.includes('<th title="How long after the first identical request this one arrived">After first (ms)</th>'));
+
 
   // ---- the page script compiles
   const script = r.body.slice(r.body.indexOf('<script>') + 8, r.body.indexOf('</script>'));
