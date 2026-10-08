@@ -50,16 +50,19 @@ const live = (ip, n, origins, hour = LATEST + HOUR) => ({ ip, requests_last_hour
   // ---------------------------------------------------------------- data: queries, caching, live hour
   db.live = [live('1.1.1.1', 6, { 'https://a.example': 2, '<b>x</b>': 1 }), live('2.2.2.2', 3, {}), live('3.3.3.3', 9, { 'https://a.example': 9 })];
   let r = await getTimeseries('ip', 1);
-  assert.strictEqual(queries.length, 4, 'newest hour, top 30, their series, live counters');
+  assert.strictEqual(queries.length, 5, 'newest hour, top 30, their series, live counters, series of an IP busy only now');
   assert.ok(/updated_at >= NOW\(\) - INTERVAL '2 hours'/.test(queries.find((q) => /ip_table/.test(q.sql)).sql), 'live read goes through the updated_at index');
   assert.ok(queries.every((q) => !/EXTRACT/.test(q.sql)), 'history windows are a plain cutoff on the indexed column');
   assert.strictEqual(queries[1].params[0], LATEST + HOUR - 24 * HOUR, '1 day = the 24 completed hours ending at the newest');
   assert.deepStrictEqual(r.hours, [new Date((LATEST - HOUR) * 1000).toISOString(), new Date(LATEST * 1000).toISOString()]);
-  assert.deepStrictEqual(r.series.map((s) => s.key), ['1.1.1.1', '2.2.2.2'], 'rank order');
+  // ranked by completed hours plus the hour in progress: 1.1.1.1 30+6, 2.2.2.2 7+3, 3.3.3.3 0+9
+  assert.deepStrictEqual(r.series.map((s) => s.key), ['1.1.1.1', '2.2.2.2', '3.3.3.3'], 'rank order');
   assert.deepStrictEqual(r.series[0], { key: '1.1.1.1', countsTotal: [10, 20], countsWithOrigin: [4, 6], countsWithoutOrigin: [6, 14] });
   assert.deepStrictEqual(r.series[1].countsTotal, [0, 7], 'hours without data are 0');
   assert.strictEqual(r.live.hour, new Date((LATEST + HOUR) * 1000).toISOString());
-  assert.deepStrictEqual(r.live.byKey, { '1.1.1.1': { total: 6, withOrigin: 3, withoutOrigin: 3 }, '2.2.2.2': { total: 3, withOrigin: 0, withoutOrigin: 3 } }, 'live for the shown IPs only');
+  assert.deepStrictEqual(r.series[2].countsTotal, [0, 0], 'busy only in the hour in progress: no completed hours');
+  assert.deepStrictEqual(r.live.byKey, { '1.1.1.1': { total: 6, withOrigin: 3, withoutOrigin: 3 }, '2.2.2.2': { total: 3, withOrigin: 0, withoutOrigin: 3 },
+    '3.3.3.3': { total: 9, withOrigin: 9, withoutOrigin: 0 } }, 'live for the shown IPs');
 
   // origins: summed over IPs, live too
   r = await getTimeseries('origin', 1);
