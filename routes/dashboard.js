@@ -890,11 +890,11 @@ router.get("/dashboard", async (req, res) => {
               { id: 'poolTimeHistoryPlot', kind: 'poolTime', yTitle: 'Pool Request Time (ms)' }
             ];
             const poolTimePercentiles = [
-              { key: 'p1', label: 'p1', color: '#9e9e9e', width: 1.5 },
+              { key: 'p5', label: 'p5', color: '#9e9e9e', width: 1.5 },
               { key: 'p25', label: 'p25', color: '#6baed6', width: 1.5 },
               { key: 'p50', label: 'p50', color: '#08519c', width: 3 },
               { key: 'p75', label: 'p75', color: '#fd8d3c', width: 1.5 },
-              { key: 'p99', label: 'p99', color: '#d62728', width: 1.5 }
+              { key: 'p95', label: 'p95', color: '#d62728', width: 1.5 }
             ];
             const historySources = [
               { key: 'Cache', color: '#9370db' },     // Purple for Cache

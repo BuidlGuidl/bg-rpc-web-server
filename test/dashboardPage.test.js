@@ -16,9 +16,9 @@ const dashboard = (poolNow, minutesIn) => ({
   nodeDurationHist: {},
   requestHistory: Array.from({ length: 72 }, (_, i) => hour(H - (72 - i) * HOUR, 100 + i)), // 3 days, last at 11:00
   requestHistoryCurrentHour: hour(H, poolNow),
-  // pool request time percentiles (ms): 3 days of hours, p99 rising with the hour; the hour in progress
-  poolTimeHistory: Array.from({ length: 72 }, (_, i) => ({ hourMs: H - (72 - i) * HOUR, n: 200, p1: 50, p25: 60, p50: 75, p75: 120, p99: 300 + i })),
-  poolTimeCurrentHour: { hourMs: H, n: 40, p1: 52, p25: 61, p50: 80, p75: 130, p99: 500 }
+  // pool request time percentiles (ms): 3 days of hours, p95 rising with the hour; the hour in progress
+  poolTimeHistory: Array.from({ length: 72 }, (_, i) => ({ hourMs: H - (72 - i) * HOUR, n: 200, p5: 50, p25: 60, p50: 75, p75: 120, p95: 300 + i })),
+  poolTimeCurrentHour: { hourMs: H, n: 40, p5: 52, p25: 61, p50: 80, p75: 130, p95: 500 }
 });
 // Last week and last day list different nodes: n3 only last week; n1 and n2 share a short name
 const weekNodes = [
@@ -146,9 +146,9 @@ const trace = (env, plot, name) => env.elements[plot].data.find((t) => t.name ==
 
   // pool request time: 5 percentile lines, the hour in progress dotted, same window
   const poolTime = env.elements.poolTimeHistoryPlot;
-  same(poolTime.data.filter((t) => !t.name.includes('in progress')).map((t) => t.name), ['p1', 'p25', 'p50', 'p75', 'p99']);
-  same(trace(env, 'poolTimeHistoryPlot', 'p99').y.slice(-2), [370, 371]);
-  live = trace(env, 'poolTimeHistoryPlot', 'p99 (hour in progress)');
+  same(poolTime.data.filter((t) => !t.name.includes('in progress')).map((t) => t.name), ['p5', 'p25', 'p50', 'p75', 'p95']);
+  same(trace(env, 'poolTimeHistoryPlot', 'p95').y.slice(-2), [370, 371]);
+  live = trace(env, 'poolTimeHistoryPlot', 'p95 (hour in progress)');
   same(live.y, [371, 500]);
   assert.strictEqual(live.line.dash, 'dot');
   same(live.text, ['371 ms (full hour, 200 requests)', '500 ms so far (40 requests, 23 min into the hour)']);
