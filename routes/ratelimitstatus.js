@@ -9,6 +9,18 @@ const axios = require('axios');
 
 require('dotenv').config();
 
+// A usage cell with a light progress bar behind the text: the share of the limit used, green under
+// 50%, yellow from 50%, red from 80% (full and red at or past the limit). percent is a number, or
+// '-' when the limit isn't known (no bar).
+function usageCell(value, percent) {
+  const share = Number(percent);
+  if (!Number.isFinite(share)) return `<td><strong>${value}</strong> <span class="percent">(${percent}%)</span></td>`;
+  const width = Math.max(0, Math.min(100, share));
+  const color = share >= 80 ? '#f8d7da' : share >= 50 ? '#fff3cd' : '#d4edda';
+  const bar = `background: linear-gradient(to right, ${color} ${width}%, transparent ${width}%);`;
+  return `<td class="usage-cell" style="${bar}" title="${percent}% of the limit"><strong>${value}</strong> <span class="percent">(${percent}%)</span></td>`;
+}
+
 router.get("/ratelimitstatus", async (req, res) => {
   try {
     const proxyHost = process.env.RPC_PROXY_HOST;
@@ -41,9 +53,9 @@ router.get("/ratelimitstatus", async (req, res) => {
             <td class="origin-cell">${origin}</td>
             <td>${stats.currentHour}</td>
             <td>${stats.previousHour}</td>
-            <td><strong>${stats.effectiveHourly}</strong> <span class="percent">(${hourlyPercent}%)</span></td>
+            ${usageCell(stats.effectiveHourly, hourlyPercent)}
             <td class="${stats.hourlyBlocked ? 'blocked' : 'ok'}">${stats.hourlyBlocked ? '🚫 YES' : '✅ No'}</td>
-            <td><strong>${stats.daily}</strong> <span class="percent">(${dailyPercent}%)</span></td>
+            ${usageCell(stats.daily, dailyPercent)}
             <td class="${stats.dailyBlocked ? 'blocked' : 'ok'}">${stats.dailyBlocked ? '🚫 YES' : '✅ No'}</td>
           </tr>
         `;
@@ -65,9 +77,9 @@ router.get("/ratelimitstatus", async (req, res) => {
             <td class="ip-cell">${ip}</td>
             <td>${stats.currentHour}</td>
             <td>${stats.previousHour}</td>
-            <td><strong>${stats.effectiveHourly}</strong> <span class="percent">(${hourlyPercent}%)</span></td>
+            ${usageCell(stats.effectiveHourly, hourlyPercent)}
             <td class="${stats.hourlyBlocked ? 'blocked' : 'ok'}">${stats.hourlyBlocked ? '🚫 YES' : '✅ No'}</td>
-            <td><strong>${stats.daily}</strong> <span class="percent">(${dailyPercent}%)</span></td>
+            ${usageCell(stats.daily, dailyPercent)}
             <td class="${stats.dailyBlocked ? 'blocked' : 'ok'}">${stats.dailyBlocked ? '🚫 YES' : '✅ No'}</td>
           </tr>
         `;
