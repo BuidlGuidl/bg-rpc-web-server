@@ -243,13 +243,17 @@ router.get("/dashboard", async (req, res) => {
           </div>
 
           <div class="dashboard-section">
-            <h2>Request Duration Distribution</h2>
+            <h2>Request Duration Distribution (ms)</h2>
             <div id="methodDurationHist" class="hist-plot"></div>
+          </div>
+
+          <div class="dashboard-section">
+            <h2>Node Duration Distribution (ms)</h2>
             <div id="nodeDurationHist" class="hist-plot"></div>
           </div>
 
           <div class="dashboard-section">
-            <h2>Node Percent Timeout (Last Week and Last Day)</h2>
+            <h2>Node Percent Timeout (Light: last day, solid: last week)</h2>
             <div id="nodeTimeoutChart" class="hist-plot"></div>
           </div>
           
@@ -276,6 +280,65 @@ router.get("/dashboard", async (req, res) => {
 
             // Draw (or redraw) every chart from one payload: { data, nodeTimeoutData, nodeTimeoutDayData }.
             // Plotly.react updates charts in place.
+            // ---- Axis labels drawn as rotated annotations (the duration charts): text for Plotly, and the
+            // room they need under the plot
+            const plotText = (v) => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            let measureContext = null;
+            // A label's width in px: measured in the browser with Plotly's font; estimated from its length
+            // where a canvas isn't available
+            function labelWidth(text, fontSize) {
+              try {
+                if (!measureContext && typeof document !== 'undefined' && document.createElement) {
+                  const canvas = document.createElement('canvas');
+                  measureContext = canvas && canvas.getContext ? canvas.getContext('2d') : null;
+                }
+                if (measureContext) {
+                  measureContext.font = fontSize + 'px "Open Sans", verdana, arial, sans-serif';
+                  const width = measureContext.measureText(text).width;
+                  if (width > 0) return width;
+                }
+              } catch (e) { /* fall back to the estimate */ }
+              return String(text).length * fontSize * 0.6;
+            }
+            // Bottom margin for labels rotated 45° under the axis: a label w wide and h tall reaches down
+            // (w + h) · sin 45°, plus a little room
+            function rotatedLabelMargin(labels, fontSize) {
+              const widest = Math.max(0, ...labels.map(text => labelWidth(text, fontSize)));
+              return Math.max(40, Math.ceil((widest + fontSize * 1.2) * Math.SQRT1_2) + 12);
+            }
+            // A node's axis label: its ID up to the MAC address (damu-MINIPC-PN64-cc:28:aa:47:44:77-linux-x64
+            // → damu-MINIPC-PN64); hover labels keep the full ID
+            const shortNode = (id) => String(id).replace(/-([0-9a-f]{2}:){5}[0-9a-f]{2}(-.*)?$/i, '');
+            // Labels longer than this are cut with … (method names come from callers; the longest real one,
+            // eth_getTransactionByBlockNumberAndIndex, is 39), so a junk name can't take over the chart
+            const MAX_AXIS_LABEL_CHARS = 40;
+            const cutLabel = (text) => (String(text).length > MAX_AXIS_LABEL_CHARS ? String(text).slice(0, MAX_AXIS_LABEL_CHARS - 1) + '…' : String(text));
+            // A label under its box: top-right corner at the axis, running down and left at 45°
+            const axisLabel = (x, text, color) => ({
+              x: x, y: 0, yshift: -4, text: text, textangle: -45, showarrow: false,
+              xanchor: 'right', yanchor: 'top', font: { size: 12, color: color }, xref: 'x', yref: 'paper'
+            });
+
+            // Minor y grid for the duration charts: light lines across the plot every MINOR_TICK_MS, unlabeled,
+            // skipped where a labeled major line is. Plotly 1.58 (plotly-latest) has no minor ticks, so they're
+            // shapes behind the boxes. The major step is set here (not left to Plotly) so the minor lines know
+            // where it is, and the range is set from the data (0 to the highest p99 + 5%, up to the next
+            // MINOR_TICK_MS) so both line up with it.
+            const MINOR_TICK_MS = 50;
+            const MAJOR_TICK_MS = 200; // labeled lines every 200 ms
+            function minorTickAxis(distributions) {
+              const highest = Math.max(0, ...distributions.map(d => Number(d && d.p99) || 0));
+              const top = Math.max(MINOR_TICK_MS, Math.ceil((highest * 1.05) / MINOR_TICK_MS) * MINOR_TICK_MS);
+              const major = MAJOR_TICK_MS;
+              const shapes = [];
+              for (let y = MINOR_TICK_MS; y < top; y += MINOR_TICK_MS) {
+                if (y % major === 0) continue; // a labeled major line is here
+                shapes.push({ type: 'line', layer: 'below', xref: 'paper', yref: 'y', x0: 0, x1: 1,
+                  y0: y, y1: y, line: { color: '#f0f0f0', width: 1 } });
+              }
+              return { range: [0, top], dtick: major, shapes: shapes };
+            }
+
             function render(payload) {
               const { data, nodeTimeoutData, nodeTimeoutDayData } = payload;
               setStatus('Data as of ' + utcTime(data.timestamp) + ' UTC, refreshes every minute');
@@ -647,11 +710,9 @@ router.get("/dashboard", async (req, res) => {
                   };
                 });
 
+                const methodTicks = minorTickAxis(Object.values(data.methodDurationHist));
                 const methodLayout = {
-                  title: {
-                    text: 'Method Duration Distribution (ms)',
-                    font: { size: 22 }
-                  },
+                  // No chart title: the section heading above the chart names it
                   xaxis: {
                     title: '',
                     tickangle: -45,
@@ -662,24 +723,17 @@ router.get("/dashboard", async (req, res) => {
                   },
                   yaxis: {
                     title: 'Duration (ms)',
-                    type: 'linear'
+                    type: 'linear',
+                    rangemode: 'nonnegative', // times can't be negative: the axis starts at 0
+                    range: methodTicks.range,
+                    tick0: 0,
+                    dtick: methodTicks.dtick, // the major step: minor lines skip it
+                    gridcolor: '#d9d9d9'
                   },
-                  annotations: Object.keys(data.methodDurationHist).map((method, index) => ({
-                    x: method,
-                    y: -0.1,
-                    text: method,
-                    textangle: -45,
-                    showarrow: false,
-                    xanchor: 'right',
-                    yanchor: 'middle',
-                    font: {
-                      size: 12,
-                      color: solidColors[index % solidColors.length]
-                    },
-                    xref: 'x',
-                    yref: 'paper'
-                  })),
-                  margin: { t: 50, b: 120, l: 50, r: 25 },
+                  shapes: methodTicks.shapes,
+                  annotations: Object.keys(data.methodDurationHist).map((method, index) =>
+                    axisLabel(method, plotText(cutLabel(method)), solidColors[index % solidColors.length])),
+                  margin: { t: 20, b: rotatedLabelMargin(Object.keys(data.methodDurationHist).map(cutLabel), 12), l: 50, r: 25 },
                   paper_bgcolor: "white",
                   plot_bgcolor: "white",
                   font: { size: 12 },
@@ -691,9 +745,25 @@ router.get("/dashboard", async (req, res) => {
                 Plotly.react('methodDurationHist', methodTraces, methodLayout);
               }
 
+              // Owners from the node timeout data in the same payload (keyed by the same node IDs): shown in the
+              // node charts' hover labels, and used to group their nodes
+              const ownerByNode = {};
+              [...(nodeTimeoutData || []), ...(nodeTimeoutDayData || [])].forEach(n => {
+                if (n && n.nodeId && n.owner && !ownerByNode[n.nodeId]) ownerByNode[n.nodeId] = n.owner;
+              });
+              // Both node charts list nodes grouped by owner (alphabetical, any case; nodes with no known owner
+              // last), then by short name, so the charts line up
+              const byOwner = (a, b) => {
+                const oa = ownerByNode[a], ob = ownerByNode[b];
+                if (!oa !== !ob) return oa ? -1 : 1;
+                return (oa || '').toLowerCase().localeCompare((ob || '').toLowerCase())
+                  || shortNode(a).localeCompare(shortNode(b)) || (a < b ? -1 : a > b ? 1 : 0);
+              };
+              const durationOrder = Object.keys(data.nodeDurationHist || {}).sort(byOwner);
+
               // Add Node Duration Distribution histogram
               if (data.nodeDurationHist) {
-                const nodeTraces = Object.entries(data.nodeDurationHist).map(([node, distribution], index) => {
+                const nodeTraces = durationOrder.map(node => [node, data.nodeDurationHist[node]]).map(([node, distribution], index) => {
                   const color = colors[index % colors.length];
                   const solidColor = solidColors[index % solidColors.length];
                   return {
@@ -704,7 +774,9 @@ router.get("/dashboard", async (req, res) => {
                     median: [distribution.p50],
                     q3: [distribution.p75],
                     upperfence: [distribution.p99],
-                    name: node,
+                    // The hover label's side box shows the trace name: node and owner, never cut short
+                    name: ownerByNode[node] ? plotText(node) + '<br>owner: ' + plotText(ownerByNode[node]) : plotText(node),
+                    hoverlabel: { namelength: -1 },
                     boxpoints: false,
                     fillcolor: color,
                     line: {
@@ -715,11 +787,9 @@ router.get("/dashboard", async (req, res) => {
                   };
                 });
 
+                const nodeTicks = minorTickAxis(Object.values(data.nodeDurationHist));
                 const nodeLayout = {
-                  title: {
-                    text: 'Node Duration Distribution (ms)',
-                    font: { size: 22 }
-                  },
+                  // No chart title: the section heading above the chart names it
                   xaxis: {
                     title: '',
                     tickangle: -45,
@@ -730,24 +800,17 @@ router.get("/dashboard", async (req, res) => {
                   },
                   yaxis: {
                     title: 'Duration (ms)',
-                    type: 'linear'
+                    type: 'linear',
+                    rangemode: 'nonnegative', // times can't be negative: the axis starts at 0
+                    range: nodeTicks.range,
+                    tick0: 0,
+                    dtick: nodeTicks.dtick, // the major step: minor lines skip it
+                    gridcolor: '#d9d9d9'
                   },
-                  annotations: Object.keys(data.nodeDurationHist).map((node, index) => ({
-                    x: node,
-                    y: -0.1,
-                    text: node,
-                    textangle: -45,
-                    showarrow: false,
-                    xanchor: 'right',
-                    yanchor: 'middle',
-                    font: {
-                      size: 12,
-                      color: solidColors[index % solidColors.length]
-                    },
-                    xref: 'x',
-                    yref: 'paper'
-                  })),
-                  margin: { t: 50, b: 120, l: 50, r: 25 },
+                  shapes: nodeTicks.shapes,
+                  annotations: durationOrder.map((node, index) =>
+                    axisLabel(node, plotText(cutLabel(shortNode(node))), solidColors[index % solidColors.length])),
+                  margin: { t: 20, b: rotatedLabelMargin(durationOrder.map(node => cutLabel(shortNode(node))), 12), l: 50, r: 25 },
                   paper_bgcolor: "white",
                   plot_bgcolor: "white",
                   font: { size: 12 },
@@ -764,59 +827,31 @@ router.get("/dashboard", async (req, res) => {
                 drawHistory(data);
               }
 
-              // Define a palette of 15 distinct colors for node owners
-              const nodeOwnerColorPalette = [
-                '#1f77b4',  // blue
-                '#ff7f0e',  // orange
-                '#2ca02c',  // green
-                '#d62728',  // red
-                '#9467bd',  // purple
-                '#8c564b',  // brown
-                '#e377c2',  // pink
-                '#7f7f7f',  // gray
-                '#bcbd22',  // yellow-green
-                '#17becf',  // cyan
-                '#aec7e8',  // light blue
-                '#ffbb78',  // light orange
-                '#98df8a',  // light green
-                '#ff9896',  // light red
-                '#c5b0d5'   // light purple
-              ];
-
-              // Create unified color mapping for all owners across both datasets
-              const allOwners = new Set();
-              if (nodeTimeoutData && nodeTimeoutData.length > 0) {
-                nodeTimeoutData.forEach(node => allOwners.add(node.owner));
-              }
-              if (nodeTimeoutDayData && nodeTimeoutDayData.length > 0) {
-                nodeTimeoutDayData.forEach(node => allOwners.add(node.owner));
-              }
-            
-              // Sort owners alphabetically for consistent ordering
-              const sortedOwners = Array.from(allOwners).sort();
-              const ownerColorMapping = {};
-              sortedOwners.forEach((owner, index) => {
-                ownerColorMapping[owner] = nodeOwnerColorPalette[index % nodeOwnerColorPalette.length];
-              });
-
-              // Node timeout percentages: one chart, two bars per node (last day light, then last week solid) in the
-              // owner's color. Bars are placed by nodeId, since two nodes can share a short name, and labeled
-              // with the short name. A node missing from one period has no bar for it.
+              // Node timeout percentages: one chart, two bars per node (last day light, then last week solid).
+              // Nodes grouped by owner like the Node Duration Distribution, in its colors (the same palette by
+              // position there), so a node reads the same in both charts; nodes only here continue the palette. Bars are
+              // placed by nodeId (two nodes can share a short name) and labeled like the duration chart:
+              // rotated annotations in the node's color. A node missing from one period has no bar for it.
               const weekNodes = nodeTimeoutData || [];
               const dayNodes = nodeTimeoutDayData || [];
               if (weekNodes.length > 0 || dayNodes.length > 0) {
-                // nodeId → { pretty, owner }: last week's order, then nodes seen only in the last day
+                // nodeId → { pretty, owner }
                 const nodeInfo = new Map();
                 [...weekNodes, ...dayNodes].forEach(node => {
                   if (!nodeInfo.has(node.nodeId)) nodeInfo.set(node.nodeId, { pretty: node.nodeIdPretty, owner: node.owner });
                 });
-                const ids = Array.from(nodeInfo.keys());
+                // Grouped by owner like the duration chart (byOwner): the same nodes in the same order
+                const ids = Array.from(nodeInfo.keys()).sort(byOwner);
+                // Palette position: the node's place in the duration chart; nodes not there take the next ones
+                let nextIndex = durationOrder.length;
+                const paletteIndex = new Map(ids.map(id => [id, durationOrder.includes(id) ? durationOrder.indexOf(id) : nextIndex++]));
+                const nodeColor = (id) => solidColors[paletteIndex.get(id) % solidColors.length];
 
-                // The day bar's lighter shade is a real color (the owner color mixed with white), not opacity,
+                // The day bar's lighter shade is a real color (the node color mixed with white), not opacity,
                 // so its tooltip, which takes the bar color, matches it
-                const lighten = (hex, amount) => {
-                  const rgb = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16));
-                  return 'rgb(' + rgb.map(c => Math.round(c + (255 - c) * amount)).join(', ') + ')';
+                const lighten = (rgb, amount) => {
+                  const parts = (String(rgb).match(/[0-9]+/g) || [0, 0, 0]).slice(0, 3).map(Number);
+                  return 'rgb(' + parts.map(c => Math.round(c + (255 - c) * amount)).join(', ') + ')';
                 };
                 const periodTrace = (nodes, name, lightness) => {
                   const percent = new Map(nodes.map(node => [node.nodeId, node.percentTimeout * 100]));
@@ -828,43 +863,36 @@ router.get("/dashboard", async (req, res) => {
                     hovertext: ids.map(id => {
                       const info = nodeInfo.get(id);
                       const value = percent.has(id) ? percent.get(id).toFixed(2) + '%' : 'no requests';
-                      return \`Node: \${info.pretty}<br>Owner: \${info.owner}<br>\${name}: \${value}\`;
+                      return 'Node: ' + plotText(info.pretty) + '<br>Owner: ' + plotText(info.owner) + '<br>' + name + ': ' + value;
                     }),
                     hovertemplate: '%{hovertext}<extra></extra>',
                     marker: {
-                      color: ids.map(id => {
-                        const color = ownerColorMapping[nodeInfo.get(id).owner];
-                        return lightness ? lighten(color, lightness) : color;
-                      }),
+                      color: ids.map(id => (lightness ? lighten(nodeColor(id), lightness) : nodeColor(id))),
                       line: { color: 'rgba(0,0,0,0.4)', width: 1 }
                     }
                   };
                 };
 
+                const labels = ids.map(id => cutLabel(shortNode(id)));
                 const maxPercent = Math.max(0, ...[...weekNodes, ...dayNodes].map(node => node.percentTimeout * 100));
                 const nodeTimeoutLayout = {
-                  title: {
-                    text: 'Node Timeout Percentage<br><sub>light: last day, solid: last week</sub>',
-                    font: { size: 22 }
-                  },
+                  // No chart title or subtitle: the section heading names it and gives the light/solid key
                   barmode: 'group',
                   bargap: 0.15,
                   bargroupgap: 0.05,
                   xaxis: {
-                    title: 'Node ID',
+                    title: '',
                     type: 'category',
-                    tickmode: 'array',
-                    tickvals: ids,
-                    ticktext: ids.map(id => nodeInfo.get(id).pretty),
-                    tickangle: -45,
-                    tickfont: { size: 10 }
+                    showticklabels: false
                   },
                   yaxis: {
                     title: 'Timeout Percentage (%)',
                     type: 'linear',
                     range: [0, maxPercent > 0 ? maxPercent * 1.1 : 1] // 10% headroom
                   },
-                  margin: { t: 70, b: 150, l: 60, r: 25 },
+                  // Labels in each node's color, as on the duration chart
+                  annotations: ids.map((id, i) => axisLabel(id, plotText(labels[i]), nodeColor(id))),
+                  margin: { t: 20, b: rotatedLabelMargin(labels, 12), l: 60, r: 25 },
                   paper_bgcolor: "white",
                   plot_bgcolor: "white",
                   font: { size: 12 },
@@ -998,7 +1026,8 @@ router.get("/dashboard", async (req, res) => {
 
             function historyLayout(plot, index) {
               const isLast = index === historyPlots.length - 1;
-              const xaxis = { title: 'Time (UTC)', type: 'date', tickformat: '%Y-%m-%d %H:%M UTC', tickangle: -45 };
+              // Tick labels like 26-10-09 00:00: two-digit year, no "UTC" (the axis title says so)
+              const xaxis = { title: 'Time (UTC)', type: 'date', tickformat: '%y-%m-%d %H:%M', tickangle: -45 };
               if (!isLast) {
                 Object.assign(xaxis, { showticklabels: false, ticks: '', title: '', zeroline: false, showgrid: true });
               }

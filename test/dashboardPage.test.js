@@ -13,7 +13,8 @@ const hour = (hourMs, pool) => ({ hourMs, nCacheRequestsSuccess: 10, nCacheReque
 const dashboard = (poolNow, minutesIn) => ({
   timestamp: H + minutesIn * 60000, nTotalRequestsLastHour: 50, nCacheRequestsClientLastHour: 5, nCacheRequestsLastHour: 10,
   nPoolRequestsLastHour: 30, nFallbackRequestsLastHour: 3, methodDurationHist: { eth_call: { p1: 1, p25: 2, p50: 3, p75: 4, p99: 5 }, '<b>method</b>': { p1: 1, p25: 2, p50: 3, p75: 4, p99: 5 } },
-  nodeDurationHist: {},
+  nodeDurationHist: { 'n2-bb': { p1: 40, p25: 50, p50: 60, p75: 70, p99: 300 }, 'n9-zz': { p1: 1, p25: 2, p50: 3, p75: 4, p99: 5 },
+    'damu-MINIPC-PN64-cc:28:aa:47:44:77-linux-x64': { p1: 1, p25: 2, p50: 3, p75: 4, p99: 5 } },
   requestHistory: Array.from({ length: 72 }, (_, i) => hour(H - (72 - i) * HOUR, 100 + i)), // 3 days, last at 11:00
   requestHistoryCurrentHour: hour(H, poolNow),
   // pool request time percentiles (ms): 3 days of hours, p95 rising with the hour; the hour in progress
@@ -79,6 +80,7 @@ const json = (body) => ({ redirected: false, ok: true, status: 200, headers: { g
 const flush = () => new Promise((r) => setImmediate(r));
 // Values made inside the vm sandbox have its own prototypes: compare plain copies
 const same = (actual, expected, message) => assert.deepStrictEqual(JSON.parse(JSON.stringify(actual)), expected, message);
+const poolTimeAxisFormat = (env) => env.elements.poolTimeHistoryPlot.layout.xaxis.tickformat;
 const trace = (env, plot, name) => env.elements[plot].data.find((t) => t.name === name);
 
 (async () => {
@@ -107,22 +109,76 @@ const trace = (env, plot, name) => env.elements[plot].data.find((t) => t.name ==
   }
   assert.ok(!env.elements.nodeTimeoutDayChart, 'last day is part of the node timeout chart now');
 
-  // node timeouts: one chart, a last-week and a last-day bar per node, placed by nodeId, labeled by short name
+  // node duration boxes: the hover label names the node and its owner (from the node timeout data);
+  // a node with no known owner shows just its ID; the name is never cut short
+  const durations = env.elements.nodeDurationHist;
+  // grouped by owner (n2-bb: owner p), nodes with no known owner last, by short name
+  same(durations.data.map((t) => t.name), ['n2-bb<br>owner: p', 'damu-MINIPC-PN64-cc:28:aa:47:44:77-linux-x64', 'n9-zz']);
+  // duration charts: no chart titles; the section heading says what they are
+  assert.ok(r.body.includes('<h2>Request Duration Distribution (ms)</h2>\n            <div id="methodDurationHist"'));
+  assert.ok(r.body.includes('<h2>Node Duration Distribution (ms)</h2>\n            <div id="nodeDurationHist"'), 'the node histogram has its own heading');
+  assert.strictEqual(durations.layout.title, undefined);
+  assert.strictEqual(env.elements.methodDurationHist.layout.title, undefined);
+  // y grid: labeled major lines every 200 ms; light minor lines across the plot every 50 ms between them,
+  // behind the boxes, never on a major line. Axis 0 to the highest p99 + 5% up to the next 50
+  // (method p99s 5 → 0–50: no minor lines; node p99s up to 300 → 0–350: majors 0, 200; minors 50, 100, 150, 250, 300)
+  same(env.elements.methodDurationHist.layout.yaxis.range, [0, 50]);
+  same(env.elements.methodDurationHist.layout.shapes, []);
+  same([durations.layout.yaxis.range, durations.layout.yaxis.dtick, durations.layout.yaxis.tick0], [[0, 350], 200, 0]);
+  same(env.elements.methodDurationHist.layout.yaxis.dtick, 200);
+  same(durations.layout.shapes.map((sh) => sh.y0), [50, 100, 150, 250, 300]);
+  assert.ok(durations.layout.shapes.every((sh) => sh.type === 'line' && sh.layer === 'below' && sh.xref === 'paper'
+    && sh.x0 === 0 && sh.x1 === 1 && sh.y0 === sh.y1 && sh.y0 % 200 !== 0), 'across the plot, never on a major line');
+  // duration charts: the y axis never goes below 0 ms
+  assert.strictEqual(durations.layout.yaxis.rangemode, 'nonnegative');
+  assert.strictEqual(env.elements.methodDurationHist.layout.yaxis.rangemode, 'nonnegative');
+  // axis labels sit right under the axis (no gap) and the bottom margin fits the longest label at 45°
+  // (no canvas here: widths estimated at 0.6 × font size per character)
+  const fits = (labels) => Math.max(40, Math.ceil((Math.max(...labels.map((t) => t.length * 12 * 0.6)) + 12 * 1.2) * Math.SQRT1_2) + 12);
+  for (const [chart, labels] of [[durations, ['n2-bb', 'n9-zz', 'damu-MINIPC-PN64']], [env.elements.methodDurationHist, ['eth_call', '<b>method</b>']]]) {
+    assert.ok(chart.layout.annotations.every((a) => a.y === 0 && a.yanchor === 'top' && a.xanchor === 'right' && a.textangle === -45));
+    assert.strictEqual(chart.layout.margin.b, fits(labels));
+  }
+  // a junk method name is cut at 40 characters, label and margin alike
+  {
+    const longMethod = 'x_' + 'y'.repeat(200);
+    const env2 = browser();
+    const script2 = r.body.slice(r.body.lastIndexOf('<script>') + 8, r.body.lastIndexOf('</script>'))
+      .replace(/const initialPayload = .*?;\n/, `const initialPayload = ${JSON.stringify({ ...payload, data: { ...payload.data, methodDurationHist: { [longMethod]: { p1: 1, p25: 2, p50: 3, p75: 4, p99: 5 } } } })};\n`);
+    vm.runInNewContext(script2, env2);
+    await flush();
+    const ann = env2.elements.methodDurationHist.layout.annotations[0];
+    assert.strictEqual(ann.text, longMethod.slice(0, 39) + '…');
+    assert.strictEqual(env2.elements.methodDurationHist.layout.margin.b, Math.ceil((40 * 12 * 0.6 + 12 * 1.2) * Math.SQRT1_2) + 12);
+  }
+  // method names come from callers: escaped for Plotly
+  same(env.elements.methodDurationHist.layout.annotations.map((a) => a.text), ['eth_call', '&lt;b&gt;method&lt;/b&gt;']);
+  // axis labels: the node ID up to its MAC address; IDs without one unchanged
+  same(durations.layout.annotations.map((a) => a.text), ['n2-bb', 'damu-MINIPC-PN64', 'n9-zz']);
+  assert.ok(durations.data.every((t) => t.hoverlabel && t.hoverlabel.namelength === -1));
+
+  // node timeouts: one chart, a last-day and a last-week bar per node, placed by nodeId. Grouped by owner
+  // like the duration chart (owner o: n1-aa, n3-cc; owner p: n2-bb). Colors follow the duration chart:
+  // n2-bb is first there (palette 0); n1-aa and n3-cc aren't in it, so they continue the palette (3, 4)
   const timeouts = env.elements.nodeTimeoutChart;
   same(timeouts.data.map((t) => t.name), ['Last day', 'Last week']); // day bar on the left
-  same(timeouts.data[0].x, ['n1-aa', 'n2-bb', 'n3-cc']);
-  same(timeouts.data[0].y, [0, 4, null]); // n3 had no requests in the last day: no bar
-  same(timeouts.data[1].y, [1, 2, 50]);
-  same(timeouts.layout.xaxis.ticktext, ['box', 'box', 'old']);
+  same(timeouts.data[0].x, ['n1-aa', 'n3-cc', 'n2-bb']);
+  same(timeouts.data[0].y, [0, null, 4]); // n3 had no requests in the last day: no bar
+  same(timeouts.data[1].y, [1, 50, 2]);
   assert.strictEqual(timeouts.layout.barmode, 'group');
-  // both bars in the owner color; the day bar a lighter shade as a real color (its tooltip takes it), not opacity
-  const ownerColor = timeouts.data[1].marker.color[0];
-  assert.match(ownerColor, /^#[0-9a-f]{6}$/);
-  const lighter = 'rgb(' + [1, 3, 5].map((i) => parseInt(ownerColor.slice(i, i + 2), 16)).map((c) => Math.round(c + (255 - c) * 0.55)).join(', ') + ')';
-  assert.strictEqual(timeouts.data[0].marker.color[0], lighter);
+  assert.strictEqual(timeouts.layout.title, undefined, 'no chart title: the section heading names it');
+  assert.ok(r.body.includes('<h2>Node Percent Timeout (Light: last day, solid: last week)</h2>'), 'the light/solid key in the heading');
+  const weekColors = timeouts.data[1].marker.color;
+  assert.strictEqual(weekColors[2], durations.layout.annotations[0].font.color, 'n2-bb: the same color as in the duration chart');
+  same(weekColors, ['rgb(214, 39, 40)', 'rgb(148, 103, 189)', 'rgb(31, 119, 180)']);
+  // the day bar: the same color, lighter, as a real color (its tooltip takes it), not opacity
+  same(timeouts.data[0].marker.color[2], 'rgb(' + [31, 119, 180].map((c) => Math.round(c + (255 - c) * 0.55)).join(', ') + ')');
   assert.strictEqual(timeouts.data[0].marker.opacity, undefined);
-  assert.notStrictEqual(timeouts.data[1].marker.color[0], timeouts.data[1].marker.color[1], 'owners told apart');
-  assert.ok(timeouts.data[0].hovertext[2].includes('no requests'));
+  // labels: rotated annotations in each node's bar color, short names; no plain tick labels
+  same(timeouts.layout.annotations.map((a) => [a.text, a.font.color]), [['n1-aa', weekColors[0]], ['n3-cc', weekColors[1]], ['n2-bb', weekColors[2]]]);
+  assert.strictEqual(timeouts.layout.xaxis.showticklabels, false);
+  assert.ok(timeouts.layout.annotations.every((a) => a.y === 0 && a.yanchor === 'top' && a.textangle === -45));
+  assert.ok(timeouts.data[0].hovertext[1].includes('no requests'));
   assert.ok(Math.abs(timeouts.layout.yaxis.range[1] - 55) < 1e-9, '10% headroom over the highest bar');
   assert.strictEqual(env.elements.totalGauge.data[0].value, 50);
   assert.strictEqual(env.elements['dashboard-status'].textContent, 'Data as of 12:23:00 UTC, refreshes every minute');
@@ -143,6 +199,10 @@ const trace = (env, plot, name) => env.elements[plot].data.find((t) => t.name ==
   assert.strictEqual(y[0], 0);
   assert.ok(Math.abs(y[1] - (171 + 16.8)) < 1e-9);
   assert.ok(env.buttons[0].classList.has('active'));
+
+  // time axis tick labels: 26-10-09 00:00 (two-digit year, no UTC; the title says it)
+  assert.strictEqual(poolTimeAxisFormat(env), '%y-%m-%d %H:%M');
+  assert.strictEqual(env.elements.requestHistoryPlot.layout.xaxis.tickformat, '%y-%m-%d %H:%M');
 
   // pool request time: 5 percentile lines, the hour in progress dotted, same window
   const poolTime = env.elements.poolTimeHistoryPlot;
