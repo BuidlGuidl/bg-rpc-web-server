@@ -39,7 +39,7 @@ const unescapeHtml = (s) => s.replace(/&(amp|lt|gt|quot|#39);/g, (m, e) => ({ am
   assert.deepStrictEqual(calls.map((c) => c.path).sort(),
     ['/cacheRequests', '/fallbackRequests', '/mergedRequests', '/poolCompareResults', '/poolNodes', '/poolRequests']);
   assert.ok(calls.every((c) => c.page === 2 && c.limit === logItemsPerPage && c.filter === 'warning' && !('method' in c) && !('q' in c)));
-  assert.ok(r.body.includes('Pool Request Logs (<span id="poolLogs-total">95</span> total entries)'), 'heading shows the filtered total');
+  assert.ok(r.body.includes('Pool Request Logs (<span id="poolLogs-total">95</span> total entries) <span class="title-emoji">🤿</span></h2>'), 'heading shows the filtered total');
   assert.ok(r.body.includes(`changePage('poolLogs', ${Math.ceil(95 / logItemsPerPage)})`), 'pagination from total');
   const pool = r.body.slice(r.body.indexOf('id="poolLogs-body"'));
   assert.deepStrictEqual([...pool.slice(0, pool.indexOf('</tbody>')).matchAll(/<tr( class="(\w+)")?>/g)].map((m) => m[2] || ''),
@@ -55,9 +55,17 @@ const unescapeHtml = (s) => s.replace(/&(amp|lt|gt|quot|#39);/g, (m, e) => ({ am
   assert.ok(r.body.includes('<input id="poolNodeLogs-q"'), 'node table has a search box');
   assert.ok(!r.body.includes('id="poolCompareResults-method"'), 'compare table: no search bar (its filters are hidden too)');
 
+  // ---- table order and titles: fallback below merged; an emoji on each title
+  const order = ['cacheLogs', 'poolLogs', 'poolNodeLogs', 'mergedLogs', 'fallbackLogs', 'poolCompareResults'].map((id) => r.body.indexOf(`<div id="${id}"`));
+  assert.ok(order.every((pos, i) => pos > 0 && (i === 0 || pos > order[i - 1])), 'cache, pool, node, merged, fallback, compare');
+  for (const [emoji, text] of [['💾', 'Cache Request Logs'], ['🤿', 'Pool Request Logs'], ['📟', 'Pool Node Logs'], ['🔗', 'Merged Request Logs'], ['🛟', 'Fallback Request Logs'], ['⚖️', 'Pool Compare Results']]) {
+    assert.ok(new RegExp(`<h2><span class="title-emoji">${emoji}</span> ${text} \\(<span id="\\w+-total">\\d+</span> total entries\\) <span class="title-emoji">${emoji}</span></h2>`).test(r.body), text);
+  }
+  assert.ok(r.body.includes('.title-emoji { font-size: 2em;'), 'emojis drawn at twice the heading size');
+
   // ---- merged requests: below Pool Node Logs, with the request tables' filters, search and pagination
   assert.ok(r.body.indexOf('id="poolNodeLogs"') < r.body.indexOf('id="mergedLogs"') && r.body.indexOf('id="mergedLogs"') < r.body.indexOf('id="poolCompareResults"'));
-  assert.ok(r.body.includes('Merged Request Logs (<span id="mergedLogs-total">2</span> total entries)'));
+  assert.ok(r.body.includes('Merged Request Logs (<span id="mergedLogs-total">2</span> total entries) <span class="title-emoji">🔗</span></h2>'));
   for (const f of ['no-client', 'all', 'success', 'warning', 'error']) assert.ok(r.body.includes(`filterLogs('mergedLogs', '${f}')`), f);
   assert.ok(r.body.includes('<select id="mergedLogs-method"') && r.body.includes('<input id="mergedLogs-q"'));
   assert.ok(r.body.includes('<div id="mergedLogs-pagination">'));

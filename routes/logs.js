@@ -71,16 +71,25 @@ async function fetchRequestLogs(url, page, filter, search) {
   };
 }
 
+// A table heading bracketed by the title's emoji, drawn larger (.title-emoji) so tables are easy to
+// find: 🤿 Pool Request Logs (95 total entries) 🤿
+function titleHeading(title, tableId, total) {
+  const [, emoji, text] = String(title).match(/^(\S+)\s+(.*)$/u) || [null, '', String(title)];
+  const icon = emoji ? `<span class="title-emoji">${escapeHtml(emoji)}</span>` : '';
+  const count = `(<span id="${tableId}-total">${total}</span> total entries)`;
+  return `<h2>${icon ? icon + ' ' : ''}${escapeHtml(text)} ${count}${icon ? ' ' + icon : ''}</h2>`;
+}
+
 // The page's tables: the logs service endpoint behind each, and how its rows are read
 const TABLES = {
-  poolLogs: { title: 'Pool Request Logs', fetch: (page, filter, search) => fetchRequestLogs('/poolRequests', page, filter, search) },
-  fallbackLogs: { title: 'Fallback Request Logs', fetch: (page, filter, search) => fetchRequestLogs('/fallbackRequests', page, filter, search) },
-  cacheLogs: { title: 'Cache Request Logs', fetch: (page, filter, search) => fetchRequestLogs('/cacheRequests', page, filter, search) },
-  poolNodeLogs: { title: 'Pool Node Logs', fetch: (page, filter, search) => fetchPage('/poolNodes', page, filter, search) },
+  poolLogs: { title: '🤿 Pool Request Logs', fetch: (page, filter, search) => fetchRequestLogs('/poolRequests', page, filter, search) },
+  fallbackLogs: { title: '🛟 Fallback Request Logs', fetch: (page, filter, search) => fetchRequestLogs('/fallbackRequests', page, filter, search) },
+  cacheLogs: { title: '💾 Cache Request Logs', fetch: (page, filter, search) => fetchRequestLogs('/cacheRequests', page, filter, search) },
+  poolNodeLogs: { title: '📟 Pool Node Logs', fetch: (page, filter, search) => fetchPage('/poolNodes', page, filter, search) },
   // Requests bg-rpc-proxy answered by sharing an identical request in flight (request merging). The
   // logs service gives each its own cache line's status, params and error class
-  mergedLogs: { title: 'Merged Request Logs', fetch: (page, filter, search) => fetchPage('/mergedRequests', page, filter, search) },
-  poolCompareResults: { title: 'Pool Compare Results', fetch: (page, filter, search) => fetchPage('/poolCompareResults', page, filter, search), isCompare: true }
+  mergedLogs: { title: '🔗 Merged Request Logs', fetch: (page, filter, search) => fetchPage('/mergedRequests', page, filter, search) },
+  poolCompareResults: { title: '⚖️ Pool Compare Results', fetch: (page, filter, search) => fetchPage('/poolCompareResults', page, filter, search), isCompare: true }
 };
 
 function renderPagination(currentPage, totalPages, baseUrl, tableId) {
@@ -272,7 +281,7 @@ function renderTable({ total, methods, entries: pageData }, title, currentPage, 
   // For initial render, return the full table
   return `
     <div id="${tableId}" style="margin-bottom: 40px;">
-      <h2>${title} (<span id="${tableId}-total">${total}</span> total entries)</h2>
+      ${titleHeading(title, tableId, total)}
       <div class="filter-buttons" style="margin-bottom: 15px;">
         <button onclick="filterLogs('${tableId}', 'no-client')" class="filter-btn active">No Client</button>
         <button onclick="filterLogs('${tableId}', 'all')" class="filter-btn">All</button>
@@ -335,7 +344,7 @@ function renderCompareTable({ total, entries: pageData }, title, currentPage, ta
 
   return `
     <div id="${tableId}" style="margin-bottom: 40px;">
-      <h2>${title} (<span id="${tableId}-total">${total}</span> total entries)</h2>
+      ${titleHeading(title, tableId, total)}
       <div class="filter-buttons hidden" style="margin-bottom: 15px;">
         <button onclick="filterLogs('${tableId}', 'no-client')" class="filter-btn active">No Client</button>
         <button onclick="filterLogs('${tableId}', 'all')" class="filter-btn">All</button>
@@ -404,6 +413,7 @@ router.get("/logs", async (req, res) => {
             th, td { padding: 8px; text-align: left; vertical-align: top; font-family: monospace; white-space: pre-wrap; }
             h1 { margin-bottom: 30px; }
             h2 { color: #333; margin-bottom: 15px; }
+            .title-emoji { font-size: 2em; vertical-align: middle; }
             tr:nth-child(even) { background-color: #f9f9f9; }
             tr:hover { background-color:rgb(227, 227, 227); }
             tr.error { background-color: #ffe5e8; }
@@ -660,14 +670,12 @@ router.get("/logs", async (req, res) => {
               </div>
             </div>
             
-            <h1>Proxy Logs</h1>
-            ${renderTable(cacheLogs, 'Cache Request Logs', currentPage, 'cacheLogs')}
-            ${renderTable(poolLogs, 'Pool Request Logs', currentPage, 'poolLogs')}
-            ${renderTable(fallbackLogs, 'Fallback Request Logs', currentPage, 'fallbackLogs')}
-            <h1>Pool Node Logs</h1>
-            ${renderTable(poolNodeLogs, 'Pool Node Logs', currentPage, 'poolNodeLogs')}
-            ${renderTable(mergedLogs, 'Merged Request Logs', currentPage, 'mergedLogs')}
-            ${renderCompareTable(poolCompareResults, 'Pool Compare Results', currentPage, 'poolCompareResults')}
+            ${renderTable(cacheLogs, TABLES.cacheLogs.title, currentPage, 'cacheLogs')}
+            ${renderTable(poolLogs, TABLES.poolLogs.title, currentPage, 'poolLogs')}
+            ${renderTable(poolNodeLogs, TABLES.poolNodeLogs.title, currentPage, 'poolNodeLogs')}
+            ${renderTable(mergedLogs, TABLES.mergedLogs.title, currentPage, 'mergedLogs')}
+            ${renderTable(fallbackLogs, TABLES.fallbackLogs.title, currentPage, 'fallbackLogs')}
+            ${renderCompareTable(poolCompareResults, TABLES.poolCompareResults.title, currentPage, 'poolCompareResults')}
           </div>
           </body>
       </html>
