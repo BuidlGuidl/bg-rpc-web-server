@@ -23,7 +23,8 @@ axios.get = async (url, config) => {
     return { data: { total: 1, methods: [XSS], entries: [{ ...row(5, 'error'), requester: XSS, params: XSS, status: XSS, method: XSS }] } };
   }
   const revert = { ...row(3, 'caller'), status: JSON.stringify({ jsonrpc: '2.0', error: { code: 3, message: 'execution reverted: ERC20: transfer amount exceeds balance', data: '0x08c379a0' + 'ab'.repeat(100) }, id: 'rv-3' }) };
-  return { data: { total: 95, methods: ['eth_blockNumber', 'eth_call'], entries: [row(1, 'error'), row(2, 'warning'), revert, row(4, 'ok')] } };
+  const longParams = { ...row(4, 'ok'), params: '{"data":"0x82ad56cb' + 'cd'.repeat(300) + '","to":"0xca11bde05977b3631167028862be2a173976ca11"},0x18f0564' };
+  return { data: { total: 95, methods: ['eth_blockNumber', 'eth_call'], entries: [row(1, 'error'), row(2, 'warning'), revert, longParams] } };
 };
 const handler = require('../routes/logs').stack.find((l) => l.route && l.route.path === '/logs').route.stack[0].handle;
 const get = (query) => new Promise((resolve) => {
@@ -31,6 +32,7 @@ const get = (query) => new Promise((resolve) => {
     send(body) { resolve({ status: this.statusCode, body }); }, json(o) { resolve({ status: this.statusCode, body: o }); } };
   handler({ query }, res);
 });
+const escapeHtmlForTest = (v) => String(v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const unescapeHtml = (s) => s.replace(/&(amp|lt|gt|quot|#39);/g, (m, e) => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" })[e]);
 
 (async () => {
@@ -50,6 +52,14 @@ const unescapeHtml = (s) => s.replace(/&(amp|lt|gt|quot|#39);/g, (m, e) => ({ am
   const statusLink = [...poolBody.matchAll(/onclick="showModal\((.*?)\)">View<\/a>/g)].map((x) => JSON.parse(unescapeHtml(x[1])));
   assert.strictEqual(statusLink[0].error.data, '0x08c379a0' + 'ab'.repeat(100), 'the full status in the popup');
   assert.ok(!poolBody.replace(/onclick="[^"]*"/g, '').includes('abababab'), 'no hex data in the visible cell');
+  // long params: the first 80 characters, then … and a View link to the whole value
+  const longText = '{"data":"0x82ad56cb' + 'cd'.repeat(300) + '","to":"0xca11bde05977b3631167028862be2a173976ca11"},0x18f0564';
+  assert.ok(poolBody.includes(`<td>${escapeHtmlForTest(longText.slice(0, 80))}… <a class="view-object-link" onclick="showModal(`), 'params cut at 80 with a View link');
+  const paramLinks = [...poolBody.matchAll(/onclick="showModal\((.*?)\)">View<\/a>/g)].map((x) => JSON.parse(unescapeHtml(x[1])));
+  assert.ok(paramLinks.includes(longText), 'the whole params in the popup');
+  assert.ok(!poolBody.replace(/onclick="[^"]*"/g, '').includes('ca11bde0'), 'the rest of the params not in the visible cell');
+  assert.ok(/th, td \{[^}]*overflow-wrap: anywhere;/.test(r.body), 'long strings with no spaces break instead of stretching columns');
+  assert.ok(r.body.includes("pre.textContent = typeof content === 'string' ? content : JSON.stringify(content, null, 2);"), 'text shown as text in the popup');
   assert.ok(r.body.includes('<select id="poolLogs-method" onchange="searchLogs(\'poolLogs\')">'));
   assert.ok(r.body.includes('<option value="eth_blockNumber">eth_blockNumber</option>'), 'methods in the dropdown');
   assert.ok(r.body.includes('<input id="poolNodeLogs-q"'), 'node table has a search box');

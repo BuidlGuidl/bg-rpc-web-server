@@ -141,7 +141,7 @@ function renderRequestRow(log) {
               <td>${escapeHtml(log.origin)}</td>
               <td>${escapeHtml(log.ip)}</td>
               <td>${escapeHtml(log.method)}</td>
-              <td>${escapeHtml(log.params)}</td>
+              <td>${formatParams(log.params)}</td>
             </tr>
           `;
 }
@@ -155,7 +155,7 @@ function renderNodeRow(log) {
               <td>${escapeHtml(log.duration)}</td>
               <td>${escapeHtml(log.status)}</td>
               <td>${escapeHtml(log.method)}</td>
-              <td>${escapeHtml(log.params)}</td>
+              <td>${formatParams(log.params)}</td>
             </tr>
           `;
 }
@@ -177,7 +177,7 @@ function renderMergedRow(log) {
               <td>${escapeHtml(log.ip)}</td>
               <td>${escapeHtml(log.method)}</td>
               <td>${log.sameCaller ? 'yes' : 'no'}</td>
-              <td>${escapeHtml(log.params)}</td>
+              <td>${formatParams(log.params)}</td>
             </tr>
           `;
 }
@@ -186,6 +186,16 @@ function renderMergedRow(log) {
 // HTML-escaped (the browser unescapes the attribute before running it).
 function modalLink(value, label) {
   return `<a class="view-object-link" onclick="showModal(${escapeHtml(JSON.stringify(value))})">${label}</a>`;
+}
+
+// Params, short: the first PARAMS_INLINE_CHARS characters, then … and a View link to the whole value
+// (multicall calldata and long hex strings have no place to wrap and stretched the column). The logs
+// service already cuts stored params at 1,000 characters, so View shows at most that.
+const PARAMS_INLINE_CHARS = 80;
+function formatParams(params) {
+  const text = params === undefined || params === null ? '' : String(params);
+  if (text.length <= PARAMS_INLINE_CHARS) return escapeHtml(text);
+  return `${escapeHtml(text.slice(0, PARAMS_INLINE_CHARS))}… ${modalLink(text, 'View')}`;
 }
 
 // A request's status, short: an error's code and message (its data, often a long hex string with
@@ -248,7 +258,7 @@ function renderCompareRow(log) {
               <td><span class="node-id">${escapeHtml(log.nodeId3)}</span><br>${formatResult(log.nodeResult3)}</td>
               <td>${log.mismatchedResults.length ? log.mismatchedResults.map(r => formatResult(r)).join('<br>') : '-'}</td>
               <td>${escapeHtml(log.method || '-')}</td>
-              <td>${escapeHtml(log.params || '-')}</td>
+              <td>${formatParams(log.params || '-')}</td>
             </tr>
           `;
 }
@@ -410,7 +420,9 @@ router.get("/logs", async (req, res) => {
             body { font-family: Arial, sans-serif; margin: 0px; }
             .container { margin: 0px 10px; }
             table { font-size: 14px; width: 100%; }
-            th, td { padding: 8px; text-align: left; vertical-align: top; font-family: monospace; white-space: pre-wrap; }
+            /* overflow-wrap: anywhere lets a long string with no spaces (an IPFS gateway origin, a hash)
+               break mid-word instead of stretching its column; normal text still wraps at spaces */
+            th, td { padding: 8px; text-align: left; vertical-align: top; font-family: monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
             h1 { margin-bottom: 30px; }
             h2 { color: #333; margin-bottom: 15px; }
             .title-emoji { font-size: 2em; vertical-align: middle; }
@@ -562,7 +574,7 @@ router.get("/logs", async (req, res) => {
               const pre = document.createElement('pre');
               pre.style.whiteSpace = 'pre-wrap';
               pre.style.wordBreak = 'break-all'; // long hex values wrap instead of scrolling sideways
-              pre.textContent = JSON.stringify(content, null, 2);
+              pre.textContent = typeof content === 'string' ? content : JSON.stringify(content, null, 2);
               document.getElementById('modalContent').replaceChildren(pre);
               modal.style.display = 'block';
             }
