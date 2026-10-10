@@ -3,6 +3,7 @@ const router = express.Router();
 const { getTimeseries, ALLOWED_DAYS } = require('../utils/edgeTimeseries');
 const { timeseriesClient } = require('../utils/timeseriesClient');
 const { lookupIp } = require('../utils/ipLookup');
+const { IP_MODAL_STYLES, IP_MODAL_MARKUP, IP_MODAL_SCRIPT } = require('../utils/ipInfoModal');
 
 // Top 30 IPs by request units, hourly, from the edge's database (utils/edgeTimeseries.js: cached,
 // read-only, so the edge's own use of the database comes first). The page redraws once a minute.
@@ -122,71 +123,7 @@ router.get("/iptimeseries", async (req, res) => {
               flex: 1;
               min-height: 0;
             }
-            .modal {
-              display: none;
-              position: fixed;
-              z-index: 1000;
-              left: 0;
-              top: 0;
-              width: 100%;
-              height: 100%;
-              overflow: auto;
-              background-color: rgba(0,0,0,0.5);
-            }
-            .modal-content {
-              background-color: #fefefe;
-              margin: 5% auto;
-              padding: 20px;
-              border: 1px solid #888;
-              border-radius: 8px;
-              width: 80%;
-              max-width: 600px;
-              box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            }
-            .modal-header {
-              display: flex;
-              justify-content: space-between;
-              align-items: center;
-              margin-bottom: 20px;
-              border-bottom: 2px solid #f0f0f0;
-              padding-bottom: 10px;
-            }
-            .modal-header h2 {
-              margin: 0;
-              color: #333;
-            }
-            .close {
-              color: #aaa;
-              font-size: 28px;
-              font-weight: bold;
-              cursor: pointer;
-              line-height: 20px;
-            }
-            .close:hover,
-            .close:focus {
-              color: #000;
-            }
-            .modal-body {
-              color: #333;
-            }
-            .ip-info-table {
-              width: 100%;
-              border-collapse: collapse;
-            }
-            .ip-info-table td {
-              padding: 10px;
-              border-bottom: 1px solid #f0f0f0;
-            }
-            .ip-info-table td:first-child {
-              font-weight: bold;
-              width: 40%;
-              color: #666;
-            }
-            .loading {
-              text-align: center;
-              padding: 20px;
-              color: #666;
-            }
+            ${IP_MODAL_STYLES}
             .timeseries-status {
               color: #666;
               font-size: 13px;
@@ -221,18 +158,7 @@ router.get("/iptimeseries", async (req, res) => {
             </div>
           </div>
           
-          <!-- IP Info Modal -->
-          <div id="ipModal" class="modal">
-            <div class="modal-content">
-              <div class="modal-header">
-                <h2>IP Information</h2>
-                <span class="close">&times;</span>
-              </div>
-              <div class="modal-body" id="modalBody">
-                <div class="loading">Loading...</div>
-              </div>
-            </div>
-          </div>
+          ${IP_MODAL_MARKUP}
           
           <div id="ipTimeseriesPlot"></div>
 
@@ -244,74 +170,8 @@ router.get("/iptimeseries", async (req, res) => {
               : currentOriginFilter === 'no-origin' ? entry.withoutOrigin
               : entry.total;
 
-            // IP lookup modal (legend click)
-            const modal = document.getElementById('ipModal');
-            const modalBody = document.getElementById('modalBody');
-            const closeBtn = document.querySelector('.close');
-
-            // Values from the lookup service go in as text, never as markup
-            function escapeText(value) {
-              return String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-            }
-
-            async function fetchIpInfo(ip) {
-              try {
-                modalBody.innerHTML = '<div class="loading">Loading...</div>';
-                modal.style.display = 'block';
-                const response = await fetch('/iptimeseries/lookup/' + encodeURIComponent(ip));
-                if (!response.ok) {
-                  throw new Error('Failed to fetch IP information');
-                }
-                displayIpInfo(await response.json());
-              } catch (error) {
-                modalBody.innerHTML = '<div class="loading" style="color: red;">Error: ' + escapeText(error.message) + '</div>';
-              }
-            }
-
-            function displayIpInfo(data) {
-              const fields = [
-                { key: 'query', label: 'IP Address' },
-                { key: 'country', label: 'Country' },
-                { key: 'countryCode', label: 'Country Code' },
-                { key: 'region', label: 'Region' },
-                { key: 'regionName', label: 'Region Name' },
-                { key: 'city', label: 'City' },
-                { key: 'zip', label: 'Zip Code' },
-                { key: 'lat', label: 'Latitude' },
-                { key: 'lon', label: 'Longitude' },
-                { key: 'timezone', label: 'Timezone' },
-                { key: 'isp', label: 'ISP' },
-                { key: 'org', label: 'Organization' },
-                { key: 'as', label: 'AS Number' },
-                { key: 'mobile', label: 'Mobile' },
-                { key: 'proxy', label: 'Proxy' },
-                { key: 'hosting', label: 'Hosting' }
-              ];
-              let html = '<table class="ip-info-table">';
-              fields.forEach(field => {
-                const value = data[field.key];
-                if (value !== undefined && value !== null && value !== '') {
-                  const displayValue = typeof value === 'boolean' ? (value ? 'Yes' : 'No') : value;
-                  html += '<tr><td>' + field.label + '</td><td>' + escapeText(displayValue) + '</td></tr>';
-                }
-              });
-              html += '</table>';
-              modalBody.innerHTML = html;
-            }
-
-            closeBtn.onclick = function() {
-              modal.style.display = 'none';
-            };
-            window.onclick = function(event) {
-              if (event.target === modal) {
-                modal.style.display = 'none';
-              }
-            };
-            document.addEventListener('keydown', function(event) {
-              if (event.key === 'Escape' && modal.style.display === 'block') {
-                modal.style.display = 'none';
-              }
-            });
+            // IP lookup popup (legend click)
+            ${IP_MODAL_SCRIPT}
 
             // Chart, hour in progress, day buttons, refresh: utils/timeseriesClient.js
             const chart = (${timeseriesClient.toString()})({

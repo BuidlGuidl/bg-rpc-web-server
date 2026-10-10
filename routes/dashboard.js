@@ -319,24 +319,75 @@ router.get("/dashboard", async (req, res) => {
               xanchor: 'right', yanchor: 'top', font: { size: 12, color: color }, xref: 'x', yref: 'paper'
             });
 
-            // Minor y grid for the duration charts: light lines across the plot every MINOR_TICK_MS, unlabeled,
-            // skipped where a labeled major line is. Plotly 1.58 (plotly-latest) has no minor ticks, so they're
-            // shapes behind the boxes. The major step is set here (not left to Plotly) so the minor lines know
-            // where it is, and the range is set from the data (0 to the highest p99 + 5%, up to the next
-            // MINOR_TICK_MS) so both line up with it.
+            // Y grid for the duration charts (Plotly 1.58 has no minor ticks: minor lines are shapes behind the
+            // boxes). Full view: labeled major lines every 200 ms, light minor lines every 50 ms between them,
+            // axis 0 to the highest p99 + 5% up to the next 50. Zoomed in: the step follows the visible range
+            // (at most ~7 labeled lines, never above 200 ms), minor lines about a quarter of it, drawn only
+            // where you're looking. The zoom survives the minute refresh (uirevision) and keeps its grid.
             const MINOR_TICK_MS = 50;
-            const MAJOR_TICK_MS = 200; // labeled lines every 200 ms
-            function minorTickAxis(distributions) {
+            const MAJOR_TICK_MS = 200;
+            const ZOOM_STEPS = [1, 2, 5, 10, 20, 25, 50, 100, 200];
+            const MINOR_OF = { 1: 0.2, 2: 0.5, 5: 1, 10: 2, 20: 5, 25: 5, 50: 10, 100: 25, 200: 50 };
+            const durationFullRange = {}; // chart id -> [0, top] of the full view
+            const durationZoom = {};      // chart id -> [lo, hi] while zoomed in, absent at the full view
+            let applyingGrid = false;
+
+            function fullDurationRange(distributions) {
               const highest = Math.max(0, ...distributions.map(d => Number(d && d.p99) || 0));
-              const top = Math.max(MINOR_TICK_MS, Math.ceil((highest * 1.05) / MINOR_TICK_MS) * MINOR_TICK_MS);
-              const major = MAJOR_TICK_MS;
+              return [0, Math.max(MINOR_TICK_MS, Math.ceil((highest * 1.05) / MINOR_TICK_MS) * MINOR_TICK_MS)];
+            }
+            // { dtick, shapes } for a visible range: minor lines across the plot, never on a major line
+            function durationGrid(range, zoomed) {
+              const lo = Math.max(0, Math.min(range[0], range[1]));
+              const hi = Math.max(range[0], range[1]);
+              const major = zoomed ? (ZOOM_STEPS.find(step => (hi - lo) / step <= 7) || MAJOR_TICK_MS) : MAJOR_TICK_MS;
+              const minor = zoomed ? MINOR_OF[major] : MINOR_TICK_MS;
+              const perMajor = Math.round(major / minor);
               const shapes = [];
-              for (let y = MINOR_TICK_MS; y < top; y += MINOR_TICK_MS) {
-                if (y % major === 0) continue; // a labeled major line is here
+              for (let k = Math.ceil(lo / minor); k * minor < hi && shapes.length < 400; k++) { // not on the top edge
+                if (k % perMajor === 0) continue; // a labeled major line is here
+                const y = Number((k * minor).toFixed(3));
                 shapes.push({ type: 'line', layer: 'below', xref: 'paper', yref: 'y', x0: 0, x1: 1,
                   y0: y, y1: y, line: { color: '#f0f0f0', width: 1 } });
               }
-              return { range: [0, top], dtick: major, shapes: shapes };
+              return { dtick: major, shapes: shapes };
+            }
+            // The grid for a chart now: its zoom if zoomed in, else the full view
+            function durationAxis(id, distributions) {
+              durationFullRange[id] = fullDurationRange(distributions);
+              const zoom = durationZoom[id];
+              // A copy: Plotly changes the layout's range array in place when you zoom, and the full range must
+              // not change with it (it did: every zoom then looked like the full view, and the grid never adjusted)
+              return { range: durationFullRange[id].slice(), ...durationGrid(zoom || durationFullRange[id], Boolean(zoom)) };
+            }
+            // On zoom (or reset): redraw the grid for the visible y range. Our own relayout is ignored
+            const zoomListening = {};
+            function followDurationZoom(id) {
+              if (zoomListening[id]) return;
+              const gd = document.getElementById(id);
+              if (!gd || !gd.on) return;
+              zoomListening[id] = true;
+              gd.on('plotly_relayout', eventData => {
+                if (applyingGrid) return;
+                let range;
+                if (eventData['yaxis.range[0]'] !== undefined && eventData['yaxis.range[1]'] !== undefined) {
+                  range = [Number(eventData['yaxis.range[0]']), Number(eventData['yaxis.range[1]'])];
+                } else if (Array.isArray(eventData['yaxis.range'])) {
+                  range = eventData['yaxis.range'].map(Number);
+                } else if (eventData['yaxis.autorange']) {
+                  range = null; // reset: back to the full view
+                } else {
+                  return; // an x-only zoom or our own update: the y grid stays
+                }
+                const full = durationFullRange[id];
+                const atFull = !range || (full && Math.abs(range[0] - full[0]) < 1e-6 && Math.abs(range[1] - full[1]) < 1e-6);
+                if (atFull) delete durationZoom[id]; else durationZoom[id] = range;
+                const grid = durationGrid(atFull ? full : range, !atFull);
+                const update = { 'yaxis.tick0': 0, 'yaxis.dtick': grid.dtick, shapes: grid.shapes };
+                if (atFull) update['yaxis.range'] = full.slice();
+                applyingGrid = true;
+                Promise.resolve(Plotly.relayout(id, update)).finally(() => { applyingGrid = false; });
+              });
             }
 
             function render(payload) {
@@ -710,7 +761,7 @@ router.get("/dashboard", async (req, res) => {
                   };
                 });
 
-                const methodTicks = minorTickAxis(Object.values(data.methodDurationHist));
+                const methodTicks = durationAxis('methodDurationHist', Object.values(data.methodDurationHist));
                 const methodLayout = {
                   // No chart title: the section heading above the chart names it
                   xaxis: {
@@ -731,6 +782,7 @@ router.get("/dashboard", async (req, res) => {
                     gridcolor: '#d9d9d9'
                   },
                   shapes: methodTicks.shapes,
+                  uirevision: 'methodDurationHist', // a zoom survives the minute refresh
                   annotations: Object.keys(data.methodDurationHist).map((method, index) =>
                     axisLabel(method, plotText(cutLabel(method)), solidColors[index % solidColors.length])),
                   margin: { t: 20, b: rotatedLabelMargin(Object.keys(data.methodDurationHist).map(cutLabel), 12), l: 50, r: 25 },
@@ -742,7 +794,7 @@ router.get("/dashboard", async (req, res) => {
                   boxgroupgap: 0
                 };
 
-                Plotly.react('methodDurationHist', methodTraces, methodLayout);
+                Promise.resolve(Plotly.react('methodDurationHist', methodTraces, methodLayout)).then(() => followDurationZoom('methodDurationHist'));
               }
 
               // Owners from the node timeout data in the same payload (keyed by the same node IDs): shown in the
@@ -787,7 +839,7 @@ router.get("/dashboard", async (req, res) => {
                   };
                 });
 
-                const nodeTicks = minorTickAxis(Object.values(data.nodeDurationHist));
+                const nodeTicks = durationAxis('nodeDurationHist', Object.values(data.nodeDurationHist));
                 const nodeLayout = {
                   // No chart title: the section heading above the chart names it
                   xaxis: {
@@ -808,6 +860,7 @@ router.get("/dashboard", async (req, res) => {
                     gridcolor: '#d9d9d9'
                   },
                   shapes: nodeTicks.shapes,
+                  uirevision: 'nodeDurationHist', // a zoom survives the minute refresh
                   annotations: durationOrder.map((node, index) =>
                     axisLabel(node, plotText(cutLabel(shortNode(node))), solidColors[index % solidColors.length])),
                   margin: { t: 20, b: rotatedLabelMargin(durationOrder.map(node => cutLabel(shortNode(node))), 12), l: 50, r: 25 },
@@ -819,7 +872,7 @@ router.get("/dashboard", async (req, res) => {
                   boxgroupgap: 0
                 };
 
-                Plotly.react('nodeDurationHist', nodeTraces, nodeLayout);
+                Promise.resolve(Plotly.react('nodeDurationHist', nodeTraces, nodeLayout)).then(() => followDurationZoom('nodeDurationHist'));
               }
 
               // Hourly Request History (drawHistory, below)

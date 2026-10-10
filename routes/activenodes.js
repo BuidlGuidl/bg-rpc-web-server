@@ -62,6 +62,27 @@ function formatNamespaces(modules) {
   return modules.map(escape).join(', ') || 'none';
 }
 
+const MAX_BLOCKS_BEHIND = 2;
+
+// Everything in a row comes from the nodes' check-ins (owner, IDs, client names, git info, enode...):
+// escape every value put into the page, so a node can't inject markup or script
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+}
+
+// An owner given as a raw address (0x… hex), not an ENS name: its cell may break anywhere, so the long
+// hex string wraps instead of widening the column
+function isRawAddress(owner) {
+  return typeof owner === 'string' && /^0x[0-9a-fA-F]+$/.test(owner);
+}
+
+// A block number with thousands separators (26150300 → 26,150,300); anything else (SUSPICIOUS, empty) as is
+function formatBlockNumber(value) {
+  const text = String(value ?? '');
+  if (/^\d+$/.test(text)) return Number(text).toLocaleString('en-US');
+  return text || 'N/A';
+}
+
 function generateTable(poolNodes) {
   let tableHtml = `
     <table border="1" style="border-collapse: collapse; width: 100%; margin: 20px 0px;">
@@ -69,7 +90,7 @@ function generateTable(poolNodes) {
         <tr style="background-color: #f2f2f2;">
           <th style="padding: 12px;">Node ID</th>
           <th style="padding: 12px;">Owner</th>
-          <th style="padding: 12px;">Block Info</th>
+          <th style="padding: 12px;">Block #</th>
           <th style="padding: 12px;">Execution Client</th>
           <th style="padding: 12px;">Consensus Client</th>
           <th style="padding: 12px;">Peers</th>
@@ -94,26 +115,40 @@ function generateTable(poolNodes) {
     return ownerA.localeCompare(ownerB);
   });
 
+  // Row colours: light orange for a node more than MAX_BLOCKS_BEHIND blocks behind the highest block any
+  // node reports; light red for a node with no block number: suspicious (the pool replaces its block
+  // number with 'SUSPICIOUS') or not reporting one. Only numeric block numbers count toward the highest
+  const blockOf = (node) => (/^\d+$/.test(String(node.block_number ?? '')) ? Number(node.block_number) : null);
+  const highestBlock = Math.max(-Infinity, ...nodesArray.map(blockOf).filter((b) => b !== null));
+
   // Generate table rows from sorted array
   for (const data of nodesArray) {
+    const block = blockOf(data);
+    const behind = block !== null && Number.isFinite(highestBlock) ? highestBlock - block : 0;
+    let rowAttrs = '';
+    if (block === null) {
+      const why = data.block_number === 'SUSPICIOUS' ? 'Suspicious node: the pool withholds its block number' : 'No block number reported';
+      rowAttrs = ` class="no-block" title="${why}"`;
+    } else if (behind > MAX_BLOCKS_BEHIND) {
+      rowAttrs = ` class="behind" title="${behind} blocks behind the highest block (${highestBlock})"`;
+    }
     tableHtml += `
-      <tr>
-        <td style="padding: 8px;">${data.id || 'N/A'}</td>
-        <td style="padding: 8px;">${data.owner || 'N/A'}</td>
+      <tr${rowAttrs}>
+        <td style="padding: 8px;">${escapeHtml(data.id || 'N/A')}</td>
+        <td style="padding: 8px;${isRawAddress(data.owner) ? ' overflow-wrap: anywhere;' : ''}">${escapeHtml(data.owner || 'N/A')}</td>
         <td style="padding: 8px;">
-          Number: ${data.block_number || 'N/A'}<br>
-          Hash: <span style="font-family: monospace; font-size: 0.9em; word-break: break-all;">${data.block_hash || 'N/A'}</span>
+          ${escapeHtml(formatBlockNumber(data.block_number))}
         </td>
-        <td style="padding: 8px;">${data.execution_client || 'N/A'}</td>
-        <td style="padding: 8px;">${data.consensus_client || 'N/A'}</td>
+        <td style="padding: 8px;">${escapeHtml(data.execution_client || 'N/A')}</td>
+        <td style="padding: 8px;">${escapeHtml(data.consensus_client || 'N/A')}</td>
         <td style="padding: 8px;">
-          Execution: ${data.execution_peers || 'N/A'}<br>
-          Consensus: ${data.consensus_peers || 'N/A'}
+          Execution: ${escapeHtml(data.execution_peers || 'N/A')}<br>
+          Consensus: ${escapeHtml(data.consensus_peers || 'N/A')}
         </td>
         <td style="padding: 8px;">
-          CPU: ${data.cpu_usage || 'N/A'}%<br>
-          Memory: ${data.memory_usage || 'N/A'}%<br>
-          Storage: ${data.storage_usage || 'N/A'}%
+          CPU: ${escapeHtml(data.cpu_usage || 'N/A')}%<br>
+          Memory: ${escapeHtml(data.memory_usage || 'N/A')}%<br>
+          Storage: ${escapeHtml(data.storage_usage || 'N/A')}%
         </td>
         <td style="padding: 8px; white-space: nowrap;">
           Receipts: ${formatFloor(data.receipt_floor)}<br>
@@ -121,33 +156,33 @@ function generateTable(poolNodes) {
           State: ${formatStateHistory(data.state_history)}
         </td>
         <td style="padding: 8px;">${formatNamespaces(data.rpc_modules)}</td>
-        <td style="padding: 8px;">${data.node_version || 'N/A'}</td>
+        <td style="padding: 8px;">${escapeHtml(data.node_version || 'N/A')}</td>
         <td style="padding: 8px;">
-          Branch: ${data.git_branch || 'N/A'}<br>
-          Last Commit: ${data.last_commit || 'N/A'}<br>
-          Hash: <span style="font-family: monospace; font-size: 0.9em;"><a href="https://github.com/BuidlGuidl/buidlguidl-client/commit/${data.commit_hash || 'N/A'}" target="_blank">${data.commit_hash || 'N/A'}</a></span>
+          Branch: ${escapeHtml(data.git_branch || 'N/A')}<br>
+          Last Commit: ${escapeHtml(data.last_commit || 'N/A')}<br>
+          Hash: <span style="font-family: monospace; font-size: 0.9em;"><a href="https://github.com/BuidlGuidl/buidlguidl-client/commit/${escapeHtml(encodeURIComponent(data.commit_hash || 'N/A'))}" target="_blank">${escapeHtml(data.commit_hash || 'N/A')}</a></span>
         </td>
         <td style="padding: 8px;">
           <details>
             <summary>View Details</summary>
             <div style="margin-top: 8px;">
               <strong>Enode:</strong><br>
-              <span style="font-family: monospace; font-size: 0.9em; word-break: break-all;">${data.enode || 'N/A'}</span>
+              <span style="font-family: monospace; font-size: 0.9em; word-break: break-all;">${escapeHtml(data.enode || 'N/A')}</span>
               <br><br>
               <strong>Peer ID:</strong><br>
-              <span style="font-family: monospace; font-size: 0.9em; word-break: break-all;">${data.peerid || 'N/A'}</span>
+              <span style="font-family: monospace; font-size: 0.9em; word-break: break-all;">${escapeHtml(data.peerid || 'N/A')}</span>
               <br><br>
               <strong>ENR:</strong><br>
-              <span style="font-family: monospace; font-size: 0.9em; word-break: break-all;">${data.enr || 'N/A'}</span>
+              <span style="font-family: monospace; font-size: 0.9em; word-break: break-all;">${escapeHtml(data.enr || 'N/A')}</span>
             </div>
           </details>
         </td>
         <td style="padding: 8px;">
-          EP: ${data.enode ? data.enode.split(':').pop() : 'N/A'}<br>
-          CP: ${data.consensus_tcp_port || 'N/A'}, ${data.consensus_udp_port || 'N/A'}
+          EP: ${escapeHtml(data.enode ? String(data.enode).split(':').pop() : 'N/A')}<br>
+          CP: ${escapeHtml(data.consensus_tcp_port || 'N/A')}, ${escapeHtml(data.consensus_udp_port || 'N/A')}
         </td>
         <td style="padding: 8px;">
-          ${data.socket_id?.id || 'N/A'}
+          ${escapeHtml(data.socket_id?.id || 'N/A')}
         </td>
       </tr>
     `;
@@ -202,6 +237,20 @@ router.get("/activenodes", async (req, res) => {
             }
             tr:hover {
               background-color:rgb(227, 227, 227);
+            }
+            /* more than MAX_BLOCKS_BEHIND blocks behind the highest node (after the even/hover rules so it wins) */
+            tr.behind {
+              background-color: #ffe0b2;
+            }
+            tr.behind:hover {
+              background-color: #ffcc80;
+            }
+            /* suspicious or not reporting a block number */
+            tr.no-block {
+              background-color: #f8d7da;
+            }
+            tr.no-block:hover {
+              background-color: #f1b0b7;
             }
             details summary {
               cursor: pointer;

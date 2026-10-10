@@ -132,12 +132,20 @@ function getCompareRowClass(log) {
   return ' class="error"';
 }
 
-function renderRequestRow(log) {
+// Tables whose durations are shown rounded to whole ms (display only; the logs keep the full value).
+// Cache durations stay as they are: hits take ~0.05 ms and would all show 0
+const ROUNDED_DURATION_TABLES = ['poolLogs', 'fallbackLogs'];
+function formatDuration(duration, round) {
+  const ms = Number(duration);
+  return round && duration !== '' && duration !== null && Number.isFinite(ms) ? String(Math.round(ms)) : duration;
+}
+
+function renderRequestRow(log, roundDuration = false) {
   return `
             <tr${getRowClass(log)}>
               <td>${escapeHtml(log.timestamp)}</td>
-              <td>${escapeHtml(log.duration)}</td>
               <td>${formatStatus(log.status)}</td>
+              <td>${escapeHtml(formatDuration(log.duration, roundDuration))}</td>
               <td>${escapeHtml(log.origin)}</td>
               <td>${escapeHtml(log.ip)}</td>
               <td>${escapeHtml(log.method)}</td>
@@ -150,10 +158,10 @@ function renderNodeRow(log) {
   return `
             <tr${getRowClass(log)}>
               <td>${escapeHtml(log.timestamp)}</td>
+              <td>${formatStatus(log.status)}</td>
+              <td>${escapeHtml(log.duration)}</td>
               <td>${escapeHtml(log.nodeId)}</td>
               <td>${escapeHtml(log.owner)}</td>
-              <td>${escapeHtml(log.duration)}</td>
-              <td>${escapeHtml(log.status)}</td>
               <td>${escapeHtml(log.method)}</td>
               <td>${formatParams(log.params)}</td>
             </tr>
@@ -169,10 +177,10 @@ function renderMergedRow(log) {
   return `
             <tr${getRowClass(log)}>
               <td>${escapeHtml(log.timestamp)}</td>
+              <td>${formatStatus(log.status)}</td>
               <td>${escapeHtml(log.gapMs)}</td>
               <td>${escapeHtml(log.waitMs)}</td>
               <td>${escapeHtml(firstTook)}</td>
-              <td>${formatStatus(log.status)}</td>
               <td>${escapeHtml(log.requester)}</td>
               <td>${escapeHtml(log.ip)}</td>
               <td>${escapeHtml(log.method)}</td>
@@ -191,7 +199,7 @@ function modalLink(value, label) {
 // Params, short: the first PARAMS_INLINE_CHARS characters, then … and a View link to the whole value
 // (multicall calldata and long hex strings have no place to wrap and stretched the column). The logs
 // service already cuts stored params at 1,000 characters, so View shows at most that.
-const PARAMS_INLINE_CHARS = 80;
+const PARAMS_INLINE_CHARS = 20;
 function formatParams(params) {
   const text = params === undefined || params === null ? '' : String(params);
   if (text.length <= PARAMS_INLINE_CHARS) return escapeHtml(text);
@@ -205,6 +213,8 @@ function formatParams(params) {
 const STATUS_INLINE_CHARS = 120;
 function formatStatus(status) {
   if (typeof status !== 'string') return escapeHtml(status ?? '');
+  // success shown as OK to save space (display only: the logs and the logs service keep 'success')
+  if (status.trim().toLowerCase() === 'success') return 'OK';
   let parsed = null;
   if (status.startsWith('{')) {
     try { parsed = JSON.parse(status); } catch { parsed = null; }
@@ -280,7 +290,8 @@ function renderSearchBar(tableId, methods) {
 
 function renderTable({ total, methods, entries: pageData }, title, currentPage, tableId, isAjax = false) {
   const totalPages = Math.ceil(total / logItemsPerPage);
-  const renderRow = tableId === 'poolNodeLogs' ? renderNodeRow : tableId === 'mergedLogs' ? renderMergedRow : renderRequestRow;
+  const renderRow = tableId === 'poolNodeLogs' ? renderNodeRow : tableId === 'mergedLogs' ? renderMergedRow
+    : (log) => renderRequestRow(log, ROUNDED_DURATION_TABLES.includes(tableId));
   const pagination = total > logItemsPerPage ? renderPagination(currentPage, totalPages, '', tableId) : '';
 
   if (isAjax) {
@@ -305,18 +316,18 @@ function renderTable({ total, methods, entries: pageData }, title, currentPage, 
           <tr style="background-color: #f2f2f2;">
             ${tableId === 'poolNodeLogs' ? `
             <th>Timestamp</th>
+            <th>Status</th>
+            <th>Duration (ms)</th>
             <th>Node ID</th>
             <th>Owner</th>
-            <th>Duration (ms)</th>
-            <th>Status</th>
             <th>Method</th>
             <th>Params</th>
             ` : tableId === 'mergedLogs' ? `
             <th>Timestamp</th>
+            <th>Status</th>
             <th title="How long after the first identical request started this one arrived">After first (ms)</th>
             <th title="How long this request then waited for the shared answer">Wait (ms)</th>
             <th title="How long the first request took in all: After first + Wait">First took (ms)</th>
-            <th>Status</th>
             <th>Origin</th>
             <th>IP</th>
             <th>Method</th>
@@ -324,8 +335,8 @@ function renderTable({ total, methods, entries: pageData }, title, currentPage, 
             <th>Params</th>
             ` : `
             <th>Timestamp</th>
-            <th>Duration (ms)</th>
             <th>Status</th>
+            <th>Duration (ms)</th>
             <th>Origin</th>
             <th>IP</th>
             <th>Method</th>

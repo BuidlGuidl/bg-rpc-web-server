@@ -65,8 +65,23 @@ function browser() {
       addEventListener: (e, f) => { docListeners[e] = f; }
     },
     Plotly: {
-      react: (id, data, layout) => { const e = el(id); e.data = data; e.layout = JSON.parse(JSON.stringify(layout)); return Promise.resolve(e); },
-      relayout: (id, update) => { const e = el(id); if (update['xaxis.range']) e.layout.xaxis.range = update['xaxis.range']; return Promise.resolve(); }
+      // Like Plotly: the chart keeps the layout object it was given (gd.layout), and a zoom changes its range
+      // array in place (relayout 'yaxis.range[0]'), so a page that shares that array with its own state sees it
+      react: (id, data, layout) => { const e = el(id); e.data = data; e.layout = layout; return Promise.resolve(e); },
+      relayout: (id, update) => {
+        const e = el(id);
+        for (const [key, value] of Object.entries(update)) {
+          // 'xaxis.range', 'yaxis.dtick', 'shapes'...: set the (nested) layout value
+          const indexed = key.match(/^(.*)\[(\d+)\]$/); // 'yaxis.range[0]': set that element of the existing array
+          const path = (indexed ? indexed[1] : key).split('.');
+          let target = e.layout;
+          path.slice(0, -1).forEach((part) => { target = target[part] ||= {}; });
+          const last = path[path.length - 1];
+          if (indexed) (target[last] ||= [])[Number(indexed[2])] = value;
+          else target[last] = JSON.parse(JSON.stringify(value));
+        }
+        return Promise.resolve();
+      }
     },
     fetch: async () => { const r = env.fetchResponses.shift(); if (r instanceof Error) throw r; return r; },
     setInterval: (f, ms) => { timers.push({ f, ms, active: true }); return timers.length; },
@@ -79,7 +94,7 @@ function browser() {
 const json = (body) => ({ redirected: false, ok: true, status: 200, headers: { get: () => 'application/json; charset=utf-8' }, json: async () => body });
 const flush = () => new Promise((r) => setImmediate(r));
 // Values made inside the vm sandbox have its own prototypes: compare plain copies
-const same = (actual, expected, message) => assert.deepStrictEqual(JSON.parse(JSON.stringify(actual)), expected, message);
+const same = (actual, expected, message) => assert.deepStrictEqual(JSON.parse(JSON.stringify(actual)), JSON.parse(JSON.stringify(expected)), message);
 const poolTimeAxisFormat = (env) => env.elements.poolTimeHistoryPlot.layout.xaxis.tickformat;
 const trace = (env, plot, name) => env.elements[plot].data.find((t) => t.name === name);
 
@@ -129,6 +144,33 @@ const trace = (env, plot, name) => env.elements[plot].data.find((t) => t.name ==
   same(durations.layout.shapes.map((sh) => sh.y0), [50, 100, 150, 250, 300]);
   assert.ok(durations.layout.shapes.every((sh) => sh.type === 'line' && sh.layer === 'below' && sh.xref === 'paper'
     && sh.x0 === 0 && sh.x1 === 1 && sh.y0 === sh.y1 && sh.y0 % 200 !== 0), 'across the plot, never on a major line');
+  // zoomed in: the grid follows the visible range (at most ~7 labeled lines, never above 200 ms; minor ~1/4)
+  // as Plotly does on a drag zoom: the range array changed in place, then the event
+  await env.Plotly.relayout('nodeDurationHist', { 'yaxis.range[0]': 40, 'yaxis.range[1]': 80 });
+  durations.handlers.plotly_relayout({ 'yaxis.range[0]': 40, 'yaxis.range[1]': 80 });
+  await flush();
+  assert.strictEqual(durations.layout.yaxis.dtick, 10, 'a 40 ms window: labeled every 10 ms');
+  same(durations.layout.shapes.map((sh) => sh.y0), [42, 44, 46, 48, 52, 54, 56, 58, 62, 64, 66, 68, 72, 74, 76, 78], 'minor every 2 ms, only in view, never on a major line');
+  // an x-only zoom leaves the y grid alone
+  durations.handlers.plotly_relayout({ 'xaxis.range[0]': 0, 'xaxis.range[1]': 1 });
+  await flush();
+  assert.strictEqual(durations.layout.yaxis.dtick, 10);
+  // a wide zoom: never above 200 ms
+  durations.handlers.plotly_relayout({ 'yaxis.range[0]': 0, 'yaxis.range[1]': 3000 });
+  await flush();
+  assert.strictEqual(durations.layout.yaxis.dtick, 200);
+  // the minute refresh keeps the zoom (uirevision) and its grid
+  assert.strictEqual(durations.layout.uirevision, 'nodeDurationHist');
+  durations.handlers.plotly_relayout({ 'yaxis.range[0]': 100, 'yaxis.range[1]': 300 });
+  await flush();
+  const zoomed = durations.layout.yaxis.dtick;
+  // reset (double-click): back to the full view and its 200/50 grid
+  durations.handlers.plotly_relayout({ 'yaxis.autorange': true });
+  await flush();
+  same([durations.layout.yaxis.range, durations.layout.yaxis.dtick], [[0, 350], 200]);
+  same(durations.layout.shapes.map((sh) => sh.y0), [50, 100, 150, 250, 300]);
+  assert.strictEqual(zoomed, 50, 'a 200 ms window: labeled every 50 ms');
+
   // duration charts: the y axis never goes below 0 ms
   assert.strictEqual(durations.layout.yaxis.rangemode, 'nonnegative');
   assert.strictEqual(env.elements.methodDurationHist.layout.yaxis.rangemode, 'nonnegative');

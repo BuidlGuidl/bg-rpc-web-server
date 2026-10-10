@@ -6,8 +6,24 @@ const express = require('express');
 // requests it rejects, or requests served by the fallback.
 const router = express.Router();
 const axios = require('axios');
+const { IP_MODAL_STYLES, IP_MODAL_MARKUP, IP_MODAL_SCRIPT } = require('../utils/ipInfoModal');
 
 require('dotenv').config();
+
+// Origins and IPs come from callers: escaped. An origin links to its site in a new tab (the edge stores
+// origins without the scheme, so https:// is added); anything that isn't a plain host[:port] stays text.
+// An IP opens the IP information popup (utils/ipInfoModal.js), as on the IP Timeseries page.
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+}
+function originLink(origin) {
+  const host = String(origin).replace(/^https?:\/\//i, '');
+  if (!/^[a-z0-9.-]+(:\d+)?$/i.test(host)) return escapeHtml(origin);
+  return `<a href="https://${escapeHtml(host)}" target="_blank" rel="noopener noreferrer">${escapeHtml(origin)}</a>`;
+}
+function ipLink(ip) {
+  return `<a href="#" class="ip-link" onclick="fetchIpInfo(${escapeHtml(JSON.stringify(String(ip)))}); return false;">${escapeHtml(ip)}</a>`;
+}
 
 // A usage cell with a light progress bar behind the text: the share of the limit used, green under
 // 50%, yellow from 50%, red from 80% (full and red at or past the limit). percent is a number, or
@@ -50,7 +66,7 @@ router.get("/ratelimitstatus", async (req, res) => {
           : '-';
         originsRows += `
           <tr class="${stats.hourlyBlocked || stats.dailyBlocked ? 'blocked-row' : ''}">
-            <td class="origin-cell">${origin}</td>
+            <td class="origin-cell">${originLink(origin)}</td>
             <td>${stats.currentHour}</td>
             <td>${stats.previousHour}</td>
             ${usageCell(stats.effectiveHourly, hourlyPercent)}
@@ -74,7 +90,7 @@ router.get("/ratelimitstatus", async (req, res) => {
           : '-';
         ipsRows += `
           <tr class="${stats.hourlyBlocked || stats.dailyBlocked ? 'blocked-row' : ''}">
-            <td class="ip-cell">${ip}</td>
+            <td class="ip-cell">${ipLink(ip)}</td>
             <td>${stats.currentHour}</td>
             <td>${stats.previousHour}</td>
             ${usageCell(stats.effectiveHourly, hourlyPercent)}
@@ -245,6 +261,14 @@ router.get("/ratelimitstatus", async (req, res) => {
               font-family: monospace;
               font-size: 13px;
             }
+            .origin-cell a, .ip-cell a {
+              color: #0066cc;
+              text-decoration: none;
+            }
+            .origin-cell a:hover, .ip-cell a:hover {
+              text-decoration: underline;
+            }
+            ${IP_MODAL_STYLES}
             .percent {
               color: #6c757d;
               font-size: 12px;
@@ -409,6 +433,10 @@ router.get("/ratelimitstatus", async (req, res) => {
               </table>
             ` : '<div class="empty-message">No IPs tracked</div>'}
           </div>
+          ${IP_MODAL_MARKUP}
+          <script>
+            ${IP_MODAL_SCRIPT}
+          </script>
         </body>
       </html>
     `);

@@ -33,6 +33,9 @@ const get = (query) => new Promise((resolve) => {
   handler({ query }, res);
 });
 const escapeHtmlForTest = (v) => String(v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+const same = (a, b, m) => assert.deepStrictEqual(JSON.parse(JSON.stringify(a)), JSON.parse(JSON.stringify(b)), m);
+// The XSS test value as a params cell: longer than 20 characters, so its first 20, escaped, then … and View
+const cutParamsCell = (value) => `<td>${escapeHtmlForTest(value.slice(0, 20))}… <a class="view-object-link"`;
 const unescapeHtml = (s) => s.replace(/&(amp|lt|gt|quot|#39);/g, (m, e) => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" })[e]);
 
 (async () => {
@@ -52,9 +55,46 @@ const unescapeHtml = (s) => s.replace(/&(amp|lt|gt|quot|#39);/g, (m, e) => ({ am
   const statusLink = [...poolBody.matchAll(/onclick="showModal\((.*?)\)">View<\/a>/g)].map((x) => JSON.parse(unescapeHtml(x[1])));
   assert.strictEqual(statusLink[0].error.data, '0x08c379a0' + 'ab'.repeat(100), 'the full status in the popup');
   assert.ok(!poolBody.replace(/onclick="[^"]*"/g, '').includes('abababab'), 'no hex data in the visible cell');
-  // long params: the first 80 characters, then … and a View link to the whole value
+  // pool and fallback durations rounded to whole ms on the page; cache durations as they are
+  {
+    const rowTimes = (html, id) => [...html.slice(html.indexOf(`id="${id}-body"`), html.indexOf(`id="${id}-pagination"`))
+      .matchAll(/<tr[^>]*>\s*<td>[^<]*<\/td>\s*<td>[\s\S]*?<\/td>\s*<td>([^<]*)<\/td>/g)].map((m) => m[1]); // duration: 3rd column
+    const realGet = axios.get;
+    axios.get = async (url, config) => {
+      const res = await realGet(url, config);
+      if (/\/(pool|fallback|cache)Requests$/.test(new URL(url).pathname)) res.data.entries = res.data.entries.map((e, i) => ({ ...e, elapsed: [3011.186, 35.597, 0.063, 71.5][i % 4] }));
+      return res;
+    };
+    const page = await get({});
+    axios.get = realGet;
+    same(rowTimes(page.body, 'poolLogs'), ['3011', '36', '0', '72']);
+    same(rowTimes(page.body, 'fallbackLogs'), ['3011', '36', '0', '72']);
+    same(rowTimes(page.body, 'cacheLogs'), ['3011.186']);
+  }
+
+  // success shown as OK in every table's status column (display only; the logs keep 'success')
+  {
+    const statusCells = (id, col) => [...r.body.slice(r.body.indexOf(`id="${id}-body"`), r.body.indexOf(`id="${id}-pagination"`))
+      .matchAll(/<tr[^>]*>((?:\s*<td>[\s\S]*?<\/td>)+)\s*<\/tr>/g)].map((m) => [...m[1].matchAll(/<td>([\s\S]*?)<\/td>/g)][col][1]);
+    // pool rows: row 4 is a success (row 3 the revert); node rows use the same entries (status in column 2)
+    assert.strictEqual(statusCells('poolLogs', 1)[3], 'OK');
+    assert.strictEqual(statusCells('fallbackLogs', 1)[3], 'OK');
+    assert.strictEqual(statusCells('poolNodeLogs', 1)[3], 'OK');
+    assert.ok(statusCells('poolNodeLogs', 1)[2].startsWith('3: execution reverted'), 'node errors get the short status too');
+    assert.ok(!/<td>success<\/td>/.test(r.body), 'no success text left in any table');
+  }
+
+  // status right after the timestamp in every table that has one (request, node, merged)
+  {
+    const nodeHeads = [...r.body.slice(r.body.indexOf('id="poolNodeLogs"'), r.body.indexOf('id="poolNodeLogs-body"')).matchAll(/<th[^>]*>([^<]+)<\/th>/g)].map((x) => x[1]);
+    same(nodeHeads, ['Timestamp', 'Status', 'Duration (ms)', 'Node ID', 'Owner', 'Method', 'Params']);
+    const poolHeads = [...r.body.slice(r.body.indexOf('id="poolLogs"'), r.body.indexOf('id="poolLogs-body"')).matchAll(/<th[^>]*>([^<]+)<\/th>/g)].map((x) => x[1]);
+    same(poolHeads, ['Timestamp', 'Status', 'Duration (ms)', 'Origin', 'IP', 'Method', 'Params']);
+  }
+
+  // long params: the first 20 characters, then … and a View link to the whole value
   const longText = '{"data":"0x82ad56cb' + 'cd'.repeat(300) + '","to":"0xca11bde05977b3631167028862be2a173976ca11"},0x18f0564';
-  assert.ok(poolBody.includes(`<td>${escapeHtmlForTest(longText.slice(0, 80))}… <a class="view-object-link" onclick="showModal(`), 'params cut at 80 with a View link');
+  assert.ok(poolBody.includes(`<td>${escapeHtmlForTest(longText.slice(0, 20))}… <a class="view-object-link" onclick="showModal(`), 'params cut at 20 with a View link');
   const paramLinks = [...poolBody.matchAll(/onclick="showModal\((.*?)\)">View<\/a>/g)].map((x) => JSON.parse(unescapeHtml(x[1])));
   assert.ok(paramLinks.includes(longText), 'the whole params in the popup');
   assert.ok(!poolBody.replace(/onclick="[^"]*"/g, '').includes('ca11bde0'), 'the rest of the params not in the visible cell');
@@ -82,11 +122,12 @@ const unescapeHtml = (s) => s.replace(/&(amp|lt|gt|quot|#39);/g, (m, e) => ({ am
   assert.ok(r.body.includes("filterLogs('mergedLogs', 'no-client');"), 'loads with No Client, like the request tables');
   const mergedBody = r.body.slice(r.body.indexOf('id="mergedLogs-body"'), r.body.indexOf('id="mergedLogs-pagination"'));
   assert.ok(mergedBody.includes('<td>yes</td>') && mergedBody.includes('<td>no</td>'), 'same caller shown');
-  // after Timestamp, in the order they happened: after first (21), wait (40), first took (61)
-  assert.ok(mergedBody.includes('<td>t7</td>\n              <td>21</td>\n              <td>40</td>\n              <td>61</td>'), 'times after the timestamp, in order');
+  // after Timestamp and Status, the times in the order they happened: after first (21), wait (40), first took (61)
+  assert.ok(/<td>t7<\/td>\n\s*<td>[\s\S]*?<\/td>\n\s*<td>21<\/td>\n\s*<td>40<\/td>\n\s*<td>61<\/td>/.test(mergedBody), 'status, then the times in order');
   const heads = [...r.body.slice(r.body.indexOf('id="mergedLogs"'), r.body.indexOf('id="mergedLogs-body"')).matchAll(/<th[^>]*>([^<]+)<\/th>/g)].map((x) => x[1]);
-  assert.deepStrictEqual(heads, ['Timestamp', 'After first (ms)', 'Wait (ms)', 'First took (ms)', 'Status', 'Origin', 'IP', 'Method', 'Same caller', 'Params']);
-  assert.strictEqual(mergedBody.split(`<td>${'&lt;img src=x onerror=alert(1)&gt;&quot;&#39;&amp;'}</td>`).length - 1, 3, 'status, origin and params escaped');
+  assert.deepStrictEqual(heads, ['Timestamp', 'Status', 'After first (ms)', 'Wait (ms)', 'First took (ms)', 'Origin', 'IP', 'Method', 'Same caller', 'Params']);
+  assert.strictEqual(mergedBody.split(`<td>${'&lt;img src=x onerror=alert(1)&gt;&quot;&#39;&amp;'}</td>`).length - 1, 2, 'status and origin escaped');
+  assert.ok(mergedBody.includes(cutParamsCell(XSS)), 'params cut to 20 characters, escaped');
 
 
   // ---- the page script compiles
@@ -97,7 +138,8 @@ const unescapeHtml = (s) => s.replace(/&(amp|lt|gt|quot|#39);/g, (m, e) => ({ am
   assert.ok(!r.body.includes('<img'), 'no injected tag anywhere');
   const esc = '&lt;img src=x onerror=alert(1)&gt;&quot;&#39;&amp;';
   const cache = r.body.slice(r.body.indexOf('id="cacheLogs-body"'), r.body.indexOf('id="cacheLogs-pagination"'));
-  assert.strictEqual(cache.split(`<td>${esc}</td>`).length - 1, 4, 'status, origin, method and params shown as text');
+  assert.strictEqual(cache.split(`<td>${esc}</td>`).length - 1, 3, 'status, origin and method shown as text');
+  assert.ok(cache.includes(cutParamsCell(XSS)), 'params cut to 20 characters, escaped');
   assert.ok(r.body.includes(`<option value="${esc}">${esc}</option>`), 'dropdown option escaped');
   const compare = r.body.slice(r.body.indexOf('id="poolCompareResults-body"'));
   assert.ok(compare.includes(`<span class="node-id">${esc}</span>`), 'node id escaped');
@@ -105,7 +147,7 @@ const unescapeHtml = (s) => s.replace(/&(amp|lt|gt|quot|#39);/g, (m, e) => ({ am
   // modal links: the attribute unescapes to showModal(<JSON literal>) of the exact value
   const links = [...compare.matchAll(/onclick="showModal\((.*?)\)">View (Object|Value)<\/a>/g)].map((m) => JSON.parse(unescapeHtml(m[1])));
   assert.deepStrictEqual(links, [{ hash: XSS }, XSS.repeat(10)]);
-  assert.ok(compare.includes(`<td>${esc}</td>`), 'params escaped');
+  assert.ok(compare.includes(cutParamsCell(XSS)), 'params cut to 20 characters, escaped');
   assert.ok(compare.includes(`<br>${esc}</td>`), 'a short raw result escaped');
 
   // ---- AJAX: only the table asked for, with the search; count for the heading
