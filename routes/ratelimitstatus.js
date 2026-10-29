@@ -2,8 +2,8 @@ const express = require('express');
 // Counts on this page are request units from the edge proxy's rate limiter (the shared cost
 // table, getLogs plan D17), not raw requests like the dashboard: most calls 1, eth_getLogs
 // 2-11 by block range, blocks and block receipts 2, eth_feeHistory / eth_getProof by size
-// (eth_getLogs was 100 before 2026-09-28). The edge doesn't count buidlguidl-client traffic,
-// requests it rejects, or requests served by the fallback.
+// (eth_getLogs was 100 before 2026-09-28). The edge doesn't count buidlguidl-client traffic or
+// requests it rejects; requests served by the fallback count since edge 01774e6 (2026-10-15).
 const router = express.Router();
 const axios = require('axios');
 const { IP_MODAL_STYLES, IP_MODAL_MARKUP, IP_MODAL_SCRIPT } = require('../utils/ipInfoModal');
@@ -35,6 +35,69 @@ function usageCell(value, percent) {
   const color = share >= 80 ? '#f8d7da' : share >= 50 ? '#fff3cd' : '#d4edda';
   const bar = `background: linear-gradient(to right, ${color} ${width}%, transparent ${width}%);`;
   return `<td class="usage-cell" style="${bar}" title="${percent}% of the limit"><strong>${value}</strong> <span class="percent">(${percent}%)</span></td>`;
+}
+
+// The edge's burst limits (rpc-ssl-proxy utils/burstLimiter.js; bg-rpc-docs
+// EDGE_BURST_LIMIT_PLAN.md): its mode and numbers, totals since the edge started, and the
+// callers refused most. In log mode nothing is refused; the counts are what enforcement would
+// have refused. An edge without burst limits sends no "burst": the section says so.
+function burstSection(burst) {
+  if (!burst || typeof burst !== 'object') {
+    return '<div class="empty-message">The edge reports no burst limits (edge older than 01774e6)</div>';
+  }
+  const logOnly = burst.mode === 'log';
+  const refusedLabel = logOnly ? 'Would refuse' : 'Refused';
+  const t = burst.totals || {};
+  const n = (v) => Number(v || 0).toLocaleString();
+  const limit = (l) => l
+    ? `${n(l.bucketSize)} units, +${n(l.refillPerSecond)}/s · ${n(l.maxInFlight)} in flight · ${n(l.maxGetLogsInFlight)} getLogs in flight`
+    : 'N/A';
+  const caller = (key) => {
+    const k = String(key);
+    if (k.startsWith('origin:')) return `<td class="origin-cell">${originLink(k.slice(7))}</td>`;
+    if (k.startsWith('ip:')) return `<td class="ip-cell">${ipLink(k.slice(3))}</td>`;
+    return `<td>${escapeHtml(k)}</td>`;
+  };
+  const rows = (Array.isArray(burst.topRefused) ? burst.topRefused : []).map(r => `
+          <tr>
+            ${caller(r.key)}
+            <td><strong>${n(r.refused)}</strong></td>
+            <td>${n(r.byCheck?.bucket)}</td>
+            <td>${n(r.byCheck?.inFlight)}</td>
+            <td>${n(r.byCheck?.getLogs)}</td>
+          </tr>`).join('');
+  const modeText = { log: 'Log only (nothing refused)', enforce: 'Enforcing', off: 'Off' }[burst.mode] || escapeHtml(burst.mode);
+  return `
+            <div class="config-grid">
+              <div class="config-item"><span class="config-label">Mode:</span> <span class="config-value">${modeText}</span></div>
+              <div class="config-item"><span class="config-label">Origin:</span> <span class="config-value">${limit(burst.limits?.origin)}</span></div>
+              <div class="config-item"><span class="config-label">IP (no origin):</span> <span class="config-value">${limit(burst.limits?.ip)}</span></div>
+              <div class="config-item"><span class="config-label">Counting since:</span> <span class="config-value">${burst.since ? escapeHtml(new Date(burst.since).toLocaleString()) : 'N/A'} (edge start)</span></div>
+            </div>
+            <div class="summary-grid">
+              <div class="stat-box"><div class="label">Admitted</div><div class="number">${n(t.admitted)}</div></div>
+              <div class="stat-box ${t.refused > 0 ? 'blocked' : ''}"><div class="label">${refusedLabel}</div><div class="number">${n(t.refused)}</div></div>
+              <div class="stat-box"><div class="label">${refusedLabel}: bucket</div><div class="number">${n(t.bucket)}</div></div>
+              <div class="stat-box"><div class="label">${refusedLabel}: in flight</div><div class="number">${n(t.inFlight)}</div></div>
+              <div class="stat-box"><div class="label">${refusedLabel}: getLogs</div><div class="number">${n(t.getLogs)}</div></div>
+              <div class="stat-box"><div class="label">Callers Tracked</div><div class="number">${n(burst.callersTracked)}</div></div>
+            </div>
+            ${rows ? `
+              <table>
+                <thead>
+                  <tr>
+                    <th>Caller</th>
+                    <th>${refusedLabel} (requests)</th>
+                    <th>Bucket empty</th>
+                    <th>Too many in flight</th>
+                    <th>Too many getLogs in flight</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${rows}
+                </tbody>
+              </table>
+            ` : `<div class="empty-message">No caller ${logOnly ? 'would have been' : 'has been'} refused since the edge started</div>`}`;
 }
 
 router.get("/ratelimitstatus", async (req, res) => {
@@ -391,6 +454,10 @@ router.get("/ratelimitstatus", async (req, res) => {
               </div>
             </div>
 
+            <!-- Burst Limits -->
+            <h2>🪣 Burst Limits${data.burst?.mode === 'log' ? ' (log only)' : ''}</h2>
+            ${burstSection(data.burst)}
+
             <!-- Origins Table -->
             <h2>🌐 Origins (${Object.keys(data.origins || {}).length})</h2>
             ${originsRows ? `
@@ -463,3 +530,4 @@ router.get("/ratelimitstatus", async (req, res) => {
 });
 
 module.exports = router;
+module.exports.burstSection = burstSection;
